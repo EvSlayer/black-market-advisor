@@ -9,6 +9,7 @@ function analyzeHtml(html, sourceLabel=''){
     const memoryStats = updateMarketMemory(data);
     renderAssumptions(data);
     const result=analyze(data);
+    updateAdvisorState(data, result);
     render(data,result);
     renderMoveRecords(data);
     lastData=data;

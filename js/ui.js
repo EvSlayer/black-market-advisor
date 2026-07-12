@@ -1,3 +1,79 @@
+function renderRecommendationExplanation(result) {
+  const why = [];
+  const whyNot = [];
+  const plan = result?.portfolioPlan;
+
+  if (!plan) return;
+
+  if (result.action === 'REBALANCE PORTFOLIO') {
+    why.push('The proposed portfolio has a meaningful expected advantage over the current mix.');
+    why.push('Each commodity remains within the 33% allocation cap.');
+    why.push('The expected improvement is large enough to justify the required trades.');
+  }
+
+  if (result.action === 'HOLD CURRENT MIX') {
+    why.push('Your current portfolio is already close to the best available allocation.');
+    why.push('Rebalancing would not add enough expected value to justify using scarce trades.');
+    why.push('Holding avoids unnecessary churn and preserves trades for a stronger opportunity.');
+  }
+
+  if (result.action === 'WAIT IN CASH') {
+    why.push('Not enough commodities currently meet their buy thresholds.');
+    why.push('Keeping cash available avoids forcing a weak entry.');
+    why.push('Cash preserves flexibility for a better market update.');
+  }
+
+  if (plan.selected?.length) {
+    why.push(
+      `Best qualifying opportunities: ${plan.selected
+        .map(item => item.name)
+        .join(', ')}.`
+    );
+  }
+
+  if (plan.lossNotes?.length) {
+    why.push(...plan.lossNotes);
+  }
+
+  if (plan.trades?.length) {
+    whyNot.push(
+      `The plan requires ${plan.trades.length} trade${plan.trades.length === 1 ? '' : 's'}.`
+    );
+  }
+
+  if (plan.projectedImprovement <= 0) {
+    whyNot.push('The projected portfolio improvement is currently limited or negative.');
+  } else {
+    whyNot.push(
+      `The projected gain of ${fmt(plan.projectedImprovement)} is an estimate, not a guarantee.`
+    );
+  }
+
+  if (plan.cashPct > 0) {
+    whyNot.push(
+      `${Math.round(plan.cashPct * 100)}% remains in cash and will not benefit if prices rise immediately.`
+    );
+  }
+
+  if (result.eventMemory?.rawEvents?.length) {
+    whyNot.push('Active market events may continue affecting prices for several updates.');
+  }
+
+  if (!why.length) {
+    why.push('This recommendation produced the strongest overall balance of value, risk, and trade efficiency.');
+  }
+
+  if (!whyNot.length) {
+    whyNot.push('Market prices can still move differently from their historical patterns.');
+  }
+
+  document.getElementById('whyList').innerHTML =
+    why.map(item => `<li>${item}</li>`).join('');
+
+  document.getElementById('whyNotList').innerHTML =
+    whyNot.map(item => `<li>${item}</li>`).join('');
+}
+
 function render(data, result){
   const currentName = result.portfolioOpt ? 'your current mix' : (result.currentOpt?.name || 'Cash');
   const pplan=result.portfolioPlan;
@@ -137,6 +213,9 @@ function render(data, result){
   }).join('');
   document.getElementById('marketTable').innerHTML = `<tr><th>Commodity</th><th class="num">Current</th><th class="num">Buy Threshold</th><th>Entry Status</th><th class="num">Sell Threshold</th><th>Exit Status</th><th>Event Signal</th><th>Price Rarity</th><th class="num">Hist Low</th><th class="num">Hist Median</th><th class="num">Hist High</th><th class="num">Est Target</th><th class="num">Upside Left</th></tr>` + data.commodities.map(c=>{ const hist=c.history||[]; const o=result.options.find(x=>x.key===c.key); const inZone=!!o?.inManualBuyZone; const nearZone=!inZone && isValidMoney(o?.buyThreshold) && c.price <= o.buyThreshold*1.15; const status=inZone?'BUY ZONE':nearZone?'WATCH':'TOO HIGH'; const statusClass=inZone?'good':nearZone?'warn':'bad'; const sellReached=!!o?.inSellZone; const nearSell=!sellReached && isValidMoney(o?.sellThreshold) && c.price >= o.sellThreshold*0.92; const exitStatus=sellReached?'SELL ZONE':nearSell?'SELL REVIEW':'HOLD ZONE'; const exitClass=sellReached?'good':nearSell?'warn':''; const sorted=[...hist,c.price].sort((a,b)=>a-b); const percentile=sorted.length?sorted.filter(x=>x<=c.price).length/sorted.length:.5; const rarity=percentile<=.10?'Very Low':percentile<=.25?'Low':percentile>=.90?'Very High':percentile>=.75?'High':'Typical'; const es=o?.eventSignal; const eventText=es&&es.confidence>=.45?`${es.effect>=0?'Bullish':'Bearish'} ${pct(Math.abs(es.effect))}<br><span class="mini">${Math.round(es.confidence*100)}% evidence confidence</span>`:(data.events.length?'Learning':'None'); const eventClass=es&&es.confidence>=.45?(es.effect>=0?'good':'bad'):''; return `<tr><td>${c.name}</td><td class="num">${fmt(c.price)}</td><td class="num">${fmt(o?.buyThreshold)}</td><td class="${statusClass}"><strong>${status}</strong></td><td class="num">${fmt(o?.sellThreshold)}</td><td class="${exitClass}"><strong>${exitStatus}</strong></td><td class="${eventClass}"><strong>${eventText}</strong></td><td><strong>${rarity}</strong> (${Math.round(percentile*100)}th pct)</td><td class="num">${fmt(Math.min(...hist,c.price))}</td><td class="num">${fmt(quantile(hist,.5)||c.price)}</td><td class="num">${fmt(Math.max(...hist,c.price))}</td><td class="num">${fmt(o?.target)}</td><td class="num ${o?.upsidePct>=0?'good':'bad'}">${pct(o?.upsidePct||0)}</td></tr>`; }).join('');
   document.getElementById('debug').textContent = JSON.stringify({data,result},null,2);
+
+renderRecommendationExplanation(result);
+
 }
 
 

@@ -83,3 +83,18 @@ if (developerToggle) {
     document.body.classList.toggle('developer-mode', enabled);
   });
 }
+
+const clearHistoryButton = document.getElementById('clearRecommendationHistoryBtn');
+
+if (clearHistoryButton) {
+  clearHistoryButton.addEventListener('click', () => {
+    const confirmed = window.confirm(
+      'Clear all saved recommendation history? This cannot be undone.'
+    );
+
+    if (!confirmed) return;
+
+    clearRecommendationHistory();
+    renderRecommendationHistory();
+  });
+}

@@ -102,3 +102,24 @@ body.developer-mode .developer-only {
 .alloc-action.keep {
   color: #cbd6ef;
 }
+
+.history-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#clearRecommendationHistoryBtn {
+  padding: 6px 10px;
+  border: 1px solid #4b5870;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+#clearRecommendationHistoryBtn:hover {
+  border-color: #7f8da8;
+}

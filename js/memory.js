@@ -128,9 +128,49 @@ startPrices: Object.fromEntries(
 )
   };
 
-  if (!history.some(item => item.id === entry.id)) {
-    history.unshift(entry);
-  }
+  const latest = history[0];
+
+const sameAction =
+  latest?.action === entry.action;
+
+const sameSelected =
+  JSON.stringify(latest?.selectedCommodityKeys || []) ===
+  JSON.stringify(entry.selectedCommodityKeys || []);
+
+const sameTrades =
+  latest?.tradesRequired === entry.tradesRequired;
+
+const sameImprovement =
+  Math.abs(
+    (latest?.improvementPct || 0) -
+    (entry.improvementPct || 0)
+  ) < 0.01;
+
+const sameConfidence =
+  Math.abs(
+    (latest?.confidence || 0) -
+    (entry.confidence || 0)
+  ) < 3;
+
+const minutesSinceLatest = latest
+  ? (
+      new Date(entry.capturedAt).getTime() -
+      new Date(latest.capturedAt).getTime()
+    ) / 60000
+  : Infinity;
+
+const isNearDuplicate =
+  latest &&
+  sameAction &&
+  sameSelected &&
+  sameTrades &&
+  sameImprovement &&
+  sameConfidence &&
+  minutesSinceLatest < 30;
+
+if (!isNearDuplicate && !history.some(item => item.id === entry.id)) {
+  history.unshift(entry);
+}
 
   const trimmedHistory = history.slice(0, 500);
 

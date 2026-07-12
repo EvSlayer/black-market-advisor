@@ -155,6 +155,94 @@ function renderConfidenceBreakdown(result) {
   `;
 }
 
+function renderDeveloperDiagnostics(result) {
+  const box = document.getElementById('developerDiagnostics');
+
+  if (!box || !result) return;
+
+  const plan = result.portfolioPlan;
+  const rows = [];
+
+  rows.push(['Action', result.action || '—']);
+  rows.push(['Decision confidence', `${result.decisionConfidence ?? 0}%`]);
+  rows.push(['Data confidence', `${result.dataConfidence ?? 0}%`]);
+  rows.push(['Risk', result.risk || '—']);
+  rows.push(['Sell pressure', result.sellPressure || '—']);
+  rows.push(['Portfolio value', fmt(result.currentValue)]);
+  rows.push(['Trade reserve', plan?.tradeReserve ?? '—']);
+  rows.push(['Actionable trade budget', plan?.actionableTradeBudget ?? '—']);
+  rows.push(['Trades in plan', plan?.trades?.length ?? 0]);
+  rows.push(['Projected current mix', fmt(plan?.projectedCurrent)]);
+  rows.push(['Projected proposed mix', fmt(plan?.projectedPlan)]);
+  rows.push([
+    'Projected improvement',
+    `${fmt(plan?.projectedImprovement)} (${pct(plan?.improvementPct || 0)})`
+  ]);
+  rows.push(['Gain per trade', fmt(plan?.gainPerTrade)]);
+  rows.push([
+    'Meaningful rebalance',
+    plan?.meaningfulRebalance ? 'Yes' : 'No'
+  ]);
+  rows.push([
+    'Opportunity-cost decision',
+    plan?.opportunityCostDecision || '—'
+  ]);
+  rows.push([
+    'Event occurrences stored',
+    result.eventMemory?.occurrences ?? 0
+  ]);
+  rows.push([
+    'Event snapshots stored',
+    result.eventMemory?.snapshots ?? 0
+  ]);
+
+  const commodityRows = (result.commodityOptions || [])
+    .sort((a, b) => b.score - a.score)
+    .map(option => `
+      <tr>
+        <td>${option.name}</td>
+        <td class="num">${Math.round(option.score)}</td>
+        <td class="num">${fmt(option.price)}</td>
+        <td class="num">${fmt(option.buyThreshold)}</td>
+        <td class="num">${fmt(option.sellThreshold)}</td>
+        <td>${option.inManualBuyZone ? 'Yes' : 'No'}</td>
+        <td>${option.inSellZone ? 'Yes' : 'No'}</td>
+        <td class="num">${pct(option.upsidePct || 0)}</td>
+        <td class="num">${pct(option.eventAdjustment || 0)}</td>
+      </tr>
+    `)
+    .join('');
+
+  box.innerHTML = `
+    <table>
+      ${rows.map(([label, value]) => `
+        <tr>
+          <th>${label}</th>
+          <td class="num">${value}</td>
+        </tr>
+      `).join('')}
+    </table>
+
+    <h3 style="margin:18px 0 8px">Commodity diagnostics</h3>
+
+    <div style="overflow-x:auto">
+      <table>
+        <tr>
+          <th>Commodity</th>
+          <th class="num">Score</th>
+          <th class="num">Price</th>
+          <th class="num">Buy threshold</th>
+          <th class="num">Sell threshold</th>
+          <th>Buy zone</th>
+          <th>Sell zone</th>
+          <th class="num">Upside</th>
+          <th class="num">Event adjustment</th>
+        </tr>
+        ${commodityRows}
+      </table>
+    </div>
+  `;
+}
 
 
 function render(data, result){
@@ -299,6 +387,7 @@ function render(data, result){
 
 renderRecommendationExplanation(result);
 renderConfidenceBreakdown(result);
+renderDeveloperDiagnostics(result);
 
 }
 

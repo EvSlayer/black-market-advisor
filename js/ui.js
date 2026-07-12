@@ -74,6 +74,89 @@ function renderRecommendationExplanation(result) {
     whyNot.map(item => `<li>${item}</li>`).join('');
 }
 
+function renderConfidenceBreakdown(result) {
+  const items = [];
+  const plan = result?.portfolioPlan;
+
+  if (!result || !plan) return;
+
+  const add = (label, value, positive = true) => {
+    items.push({ label, value, positive });
+  };
+
+  if (result.dataConfidence >= 75) {
+    add('Strong historical data coverage', '+12', true);
+  } else if (result.dataConfidence >= 50) {
+    add('Moderate historical data coverage', '+6', true);
+  } else {
+    add('Limited historical data', '-10', false);
+  }
+
+  if (plan.meaningfulRebalance) {
+    add('Projected improvement clears the trade threshold', '+14', true);
+  } else {
+    add('Projected improvement does not clearly justify trading', '-8', false);
+  }
+
+  if (plan.trades.length === 0) {
+    add('No trades required', '+8', true);
+  } else if (plan.trades.length <= 2) {
+    add('Low trade cost', '+4', true);
+  } else {
+    add(`Requires ${plan.trades.length} trades`, '-6', false);
+  }
+
+  if (plan.overBudget) {
+    add('Plan exceeds the available trade budget', '-12', false);
+  }
+
+  if (plan.lossNotes?.length) {
+    add('Loss-protection rules are active', '+5', true);
+  }
+
+  if (result.eventMemory?.rawEvents?.length) {
+    const reliableSignals = result.commodityOptions?.some(
+      option => option.eventSignal?.confidence >= 0.45
+    );
+
+    if (reliableSignals) {
+      add('Repeated event history supports the analysis', '+7', true);
+    } else {
+      add('Active events have limited historical evidence', '-7', false);
+    }
+  }
+
+  if (result.action === 'HOLD CURRENT MIX') {
+    add('Current mix is already close to the optimized allocation', '+10', true);
+  }
+
+  if (result.action === 'WAIT IN CASH') {
+    add('Cash avoids forcing weak entries', '+8', true);
+  }
+
+  const rows = items.map(item => `
+    <div class="confidence-row">
+      <span>${item.label}</span>
+      <strong class="${item.positive ? 'good' : 'bad'}">
+        ${item.value}
+      </strong>
+    </div>
+  `).join('');
+
+  document.getElementById('confidenceBreakdown').innerHTML = `
+    <div class="confidence-total">
+      <span>Final decision confidence</span>
+      <strong>${result.decisionConfidence}%</strong>
+    </div>
+    ${rows}
+    <div class="mini" style="margin-top:10px">
+      These values explain the main factors behind the confidence level; they are not a direct arithmetic formula.
+    </div>
+  `;
+}
+
+
+
 function render(data, result){
   const currentName = result.portfolioOpt ? 'your current mix' : (result.currentOpt?.name || 'Cash');
   const pplan=result.portfolioPlan;
@@ -215,6 +298,7 @@ function render(data, result){
   document.getElementById('debug').textContent = JSON.stringify({data,result},null,2);
 
 renderRecommendationExplanation(result);
+renderConfidenceBreakdown(result);
 
 }
 

@@ -64,3 +64,20 @@ document.getElementById('copyBookmarkletBtn').onclick=async()=>{
 refreshBookmarklet();
 renderAssumptions(null);
 tryImportFromBookmarklet();
+
+const developerToggle = document.getElementById('developerModeToggle');
+
+if (developerToggle) {
+  const savedDeveloperMode =
+    localStorage.getItem('bm_developer_mode') === 'true';
+
+  developerToggle.checked = savedDeveloperMode;
+  document.body.classList.toggle('developer-mode', savedDeveloperMode);
+
+  developerToggle.addEventListener('change', () => {
+    const enabled = developerToggle.checked;
+
+    localStorage.setItem('bm_developer_mode', String(enabled));
+    document.body.classList.toggle('developer-mode', enabled);
+  });
+}

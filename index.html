@@ -53,11 +53,26 @@
       <div class="strategy-settings">
         <div class="setting-box">
           <div class="setting-label">Mode</div>
+
+
           <select id="mode">
             <option value="aggressive">Aggressive</option>
             <option value="balanced" selected>Balanced</option>
             <option value="conservative">Conservative</option>
           </select>
+
+<div class="developer-toggle-row">
+  <label class="developer-toggle">
+    <input type="checkbox" id="developerModeToggle">
+    Developer Mode
+  </label>
+</div>
+
+
+
+
+
+
         </div>
         <div class="setting-box">
           <div class="setting-label">Portfolio rule</div>
@@ -177,7 +192,7 @@
       <div style="overflow:auto"><table id="marketTable"></table></div>
     </section>
 
-    <section class="card" style="margin-top:16px">
+    <section class="card developer-only" style="margin-top:16px">
       <details><summary>Parsed JSON / debug</summary><pre id="debug" style="white-space:pre-wrap;color:#cbd6ef;font-size:12px"></pre></details>
     </section>
   </section>

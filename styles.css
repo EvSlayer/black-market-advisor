@@ -50,3 +50,29 @@
     grid-template-columns: 1fr;
   }
 }
+
+.developer-toggle-row {
+  margin-top: 12px;
+}
+
+.developer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.developer-toggle input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.developer-only {
+  display: none;
+}
+
+body.developer-mode .developer-only {
+  display: block;
+}

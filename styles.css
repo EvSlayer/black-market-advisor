@@ -76,3 +76,29 @@
 body.developer-mode .developer-only {
   display: block;
 }
+
+.alloc-action {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.alloc-action.buy {
+  color: #42e58c;
+}
+
+.alloc-action.trim {
+  color: #ffd35a;
+}
+
+.alloc-action.hold,
+.alloc-action.keep {
+  color: #cbd6ef;
+}

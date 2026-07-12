@@ -244,6 +244,54 @@ function renderDeveloperDiagnostics(result) {
   `;
 }
 
+function renderRecommendationHistory() {
+  const box = document.getElementById('recommendationHistory');
+  if (!box) return;
+
+  const history = loadRecommendationHistory();
+
+  if (!history.length) {
+    box.innerHTML = '<div class="mini">No recommendations saved yet.</div>';
+    return;
+  }
+
+  box.innerHTML = `
+    <div style="overflow-x:auto">
+      <table>
+        <tr>
+          <th>Date</th>
+          <th>Action</th>
+          <th class="num">Confidence</th>
+          <th class="num">Portfolio</th>
+          <th>Selected commodities</th>
+          <th class="num">Projected improvement</th>
+          <th class="num">Trades</th>
+        </tr>
+        ${history.slice(0, 25).map(entry => `
+          <tr>
+            <td>${new Date(entry.capturedAt).toLocaleString()}</td>
+            <td><strong>${entry.action}</strong></td>
+            <td class="num">${entry.confidence ?? '—'}%</td>
+            <td class="num">${fmt(entry.portfolioValue)}</td>
+            <td>${entry.selectedCommodities?.length
+              ? entry.selectedCommodities.join(', ')
+              : 'None'}</td>
+            <td class="num ${entry.projectedImprovement >= 0 ? 'good' : 'bad'}">
+              ${fmt(entry.projectedImprovement)}
+              (${pct(entry.improvementPct || 0)})
+            </td>
+            <td class="num">${entry.tradesRequired ?? 0}</td>
+          </tr>
+        `).join('')}
+      </table>
+    </div>
+
+    <div class="mini" style="margin-top:10px">
+      Showing the 25 most recent recommendations. Up to 500 are stored locally in this browser.
+    </div>
+  `;
+}
+
 
 function render(data, result){
   const currentName = result.portfolioOpt ? 'your current mix' : (result.currentOpt?.name || 'Cash');
@@ -388,6 +436,7 @@ function render(data, result){
 renderRecommendationExplanation(result);
 renderConfidenceBreakdown(result);
 renderDeveloperDiagnostics(result);
+renderRecommendationHistory();
 
 }
 

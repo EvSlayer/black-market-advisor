@@ -86,3 +86,53 @@ function allMoveRecords(data){
   return (data?.commodities||[]).map(c=>({key:c.key,name:c.name,...movementStats(c.history||[])}));
 }
 
+function loadRecommendationHistory() {
+  try {
+    return JSON.parse(
+      localStorage.getItem('bm_recommendation_history_v1') || '[]'
+    );
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveRecommendationHistory(data, result) {
+  if (!data || !result) return [];
+
+  const history = loadRecommendationHistory();
+
+  const entry = {
+    id: `${data.parsedAt || Date.now()}|${result.action}`,
+    capturedAt: data.parsedAt || new Date().toISOString(),
+    action: result.action || 'Unknown',
+    confidence: result.decisionConfidence ?? null,
+    dataConfidence: result.dataConfidence ?? null,
+    risk: result.risk || null,
+    portfolioValue: result.currentValue || data.totalPortfolio || 0,
+    projectedImprovement:
+      result.portfolioPlan?.projectedImprovement || 0,
+    improvementPct:
+      result.portfolioPlan?.improvementPct || 0,
+    selectedCommodities:
+      result.portfolioPlan?.selected?.map(item => item.name) || [],
+    tradesRequired:
+      result.portfolioPlan?.trades?.length || 0
+  };
+
+  if (!history.some(item => item.id === entry.id)) {
+    history.unshift(entry);
+  }
+
+  const trimmedHistory = history.slice(0, 500);
+
+  localStorage.setItem(
+    'bm_recommendation_history_v1',
+    JSON.stringify(trimmedHistory)
+  );
+
+  return trimmedHistory;
+}
+
+function clearRecommendationHistory() {
+  localStorage.removeItem('bm_recommendation_history_v1');
+}

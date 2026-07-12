@@ -115,8 +115,17 @@ function saveRecommendationHistory(data, result) {
       result.portfolioPlan?.improvementPct || 0,
     selectedCommodities:
       result.portfolioPlan?.selected?.map(item => item.name) || [],
+      selectedCommodityKeys:
+  result.portfolioPlan?.selected?.map(item => item.key) || [],
     tradesRequired:
-      result.portfolioPlan?.trades?.length || 0
+  result.portfolioPlan?.trades?.length || 0,
+
+startPrices: Object.fromEntries(
+  (data.commodities || []).map(item => [
+    item.key,
+    Number(item.price) || 0
+  ])
+)
   };
 
   if (!history.some(item => item.id === entry.id)) {
@@ -135,4 +144,70 @@ function saveRecommendationHistory(data, result) {
 
 function clearRecommendationHistory() {
   localStorage.removeItem('bm_recommendation_history_v1');
+}
+
+function updateRecommendationOutcomes(data) {
+  if (!data?.commodities?.length) return [];
+
+  const history = loadRecommendationHistory();
+  const now = new Date(data.parsedAt || Date.now()).getTime();
+
+  const currentPrices = Object.fromEntries(
+    data.commodities.map(item => [item.key, Number(item.price) || 0])
+  );
+
+  history.forEach(entry => {
+    if (!entry.startPrices || entry.outcomeStatus === 'final') return;
+
+    const ageMinutes =
+      (now - new Date(entry.capturedAt).getTime()) / 60000;
+
+    if (ageMinutes < 30) {
+      entry.outcome = 'Pending';
+      entry.outcomeStatus = 'pending';
+      return;
+    }
+
+    const selectedKeys = (entry.selectedCommodityKeys || []).length
+  ? entry.selectedCommodityKeys
+  : Object.keys(entry.startPrices || {});
+
+const changes = selectedKeys
+  .map(key => {
+    const startPrice = entry.startPrices?.[key];
+    const currentPrice = currentPrices[key];
+
+    if (!(startPrice > 0 && currentPrice > 0)) return null;
+
+    return (currentPrice - startPrice) / startPrice;
+  })
+  .filter(value => Number.isFinite(value));
+
+    if (!changes.length) return;
+
+    const averageChange =
+      changes.reduce((sum, value) => sum + value, 0) /
+      changes.length;
+
+    entry.actualChangePct = averageChange;
+    entry.lastEvaluatedAt = data.parsedAt || new Date().toISOString();
+
+    if (averageChange >= 0.02) {
+      entry.outcome = 'Successful';
+      entry.outcomeStatus = 'final';
+    } else if (averageChange <= -0.02) {
+      entry.outcome = 'Unsuccessful';
+      entry.outcomeStatus = 'final';
+    } else {
+      entry.outcome = 'Still developing';
+      entry.outcomeStatus = 'pending';
+    }
+  });
+
+  localStorage.setItem(
+    'bm_recommendation_history_v1',
+    JSON.stringify(history)
+  );
+
+  return history;
 }

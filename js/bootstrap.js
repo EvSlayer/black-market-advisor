@@ -10,6 +10,7 @@ function analyzeHtml(html, sourceLabel=''){
     renderAssumptions(data);
     const result=analyze(data);
     updateAdvisorState(data, result);
+    updateRecommendationOutcomes(data);
     saveRecommendationHistory(data, result);
     render(data,result);
     renderMoveRecords(data);

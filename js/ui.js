@@ -266,6 +266,7 @@ function renderRecommendationHistory() {
           <th>Selected commodities</th>
           <th class="num">Projected improvement</th>
           <th class="num">Trades</th>
+          <th>Outcome</th>
         </tr>
         ${history.slice(0, 25).map(entry => `
           <tr>
@@ -281,6 +282,24 @@ function renderRecommendationHistory() {
               (${pct(entry.improvementPct || 0)})
             </td>
             <td class="num">${entry.tradesRequired ?? 0}</td>
+
+            <td>
+  <strong class="${
+    entry.outcome === 'Successful'
+      ? 'good'
+      : entry.outcome === 'Unsuccessful'
+        ? 'bad'
+        : 'warn'
+  }">
+    ${entry.outcome || 'Pending'}
+  </strong>
+  ${
+    Number.isFinite(entry.actualChangePct)
+      ? `<br><span class="mini">${pct(entry.actualChangePct)}</span>`
+      : ''
+  }
+</td>
+
           </tr>
         `).join('')}
       </table>

@@ -213,6 +213,9 @@ function renderDeveloperDiagnostics(result) {
     `)
     .join('');
 
+
+
+
   box.innerHTML = `
     <table>
       ${rows.map(([label, value]) => `
@@ -310,6 +313,321 @@ function renderRecommendationHistory() {
     </div>
   `;
 }
+
+function renderPositionSwitchOutlook(data, result) {
+  const select = document.getElementById('positionSwitchSelect');
+  const box = document.getElementById('positionSwitchOutlook');
+
+  if (!select || !box || !result) return;
+
+  const holdings = result.positionAssessments || [];
+  const options = result.commodityOptions || [];
+
+  if (!holdings.length) {
+    select.innerHTML = '<option value="">No meaningful holdings found</option>';
+    box.innerHTML = '<div class="mini">No meaningful positions are available to compare.</div>';
+    return;
+  }
+
+  const previousValue = select.value;
+
+  select.innerHTML = holdings
+    .map(position => `
+      <option value="${position.key}">
+        ${position.name} — ${fmt(position.value)}
+      </option>
+    `)
+    .join('');
+
+  select.value = holdings.some(position => position.key === previousValue)
+    ? previousValue
+    : holdings[0].key;
+
+  const renderSelectedPosition = () => {
+    const holding = holdings.find(position => position.key === select.value);
+
+    if (!holding) return;
+
+    const currentOption = options.find(option => option.key === holding.key);
+
+    if (!currentOption) {
+      box.innerHTML = '<div class="mini">Unable to analyze this holding.</div>';
+      return;
+    }
+
+    const holdTargetValue =
+      holding.qty * currentOption.target;
+
+    const comparisons = options
+      .filter(option => option.key !== holding.key)
+      .map(option => {
+        const qty = Math.floor(holding.value / option.price);
+        const spent = qty * option.price;
+        const leftoverCash = holding.value - spent;
+        const switchTargetValue =
+          qty * option.target + leftoverCash;
+
+        const difference =
+          switchTargetValue - holdTargetValue;
+
+        const realizesLoss =
+          holding.avgBuy > 0 &&
+          holding.current < holding.avgBuy;
+
+        return {
+          key: option.key,
+          name: option.name,
+          price: option.price,
+          qty,
+          leftoverCash,
+          switchTargetValue,
+          difference,
+          improvementPct:
+            holdTargetValue > 0
+              ? difference / holdTargetValue
+              : 0,
+          inBuyZone: option.inManualBuyZone,
+          realizesLoss
+        };
+      })
+      .sort((a, b) => b.difference - a.difference);
+
+      const bestSwitch = comparisons[0] || null;
+
+const bestActionableSwitch =
+  comparisons.find(comparison =>
+    comparison.difference > 0 &&
+    comparison.inBuyZone
+  ) || null;
+
+const holdIsBest =
+  !bestSwitch ||
+  bestSwitch.difference <= 0;
+
+const actionableSwitchIsWorthIt =
+  bestActionableSwitch &&
+  bestActionableSwitch.improvementPct >= 0.08;
+
+const decisionType = holdIsBest
+  ? 'hold'
+  : actionableSwitchIsWorthIt
+    ? 'switch-now'
+    : 'wait';
+
+const summary = document.getElementById('positionSwitchSummary');
+
+if (summary) {
+  if (decisionType === 'hold') {
+    summary.className = 'position-switch-summary best-hold';
+
+    summary.innerHTML = `
+      <div class="decision-label">Best Decision</div>
+
+      <div class="decision-action">
+        ✅ HOLD ${holding.name}
+      </div>
+
+      <div class="decision-metric">
+        Expected value:
+        <strong>${fmt(holdTargetValue)}</strong>
+      </div>
+
+      <ul>
+        <li>Every switch performs worse than simply holding.</li>
+        <li>Best alternative loses <strong>${fmt(Math.abs(bestSwitch?.difference || 0))}</strong>.</li>
+        <li>No trades required.</li>
+      </ul>
+    `;
+  } else if (decisionType === 'switch-now') {
+    summary.className = 'position-switch-summary best-switch';
+
+    summary.innerHTML = `
+      <div class="decision-label">Switch Now</div>
+
+      <div class="decision-action">
+        🔄 SELL ${holding.name}<br>
+        BUY ${bestActionableSwitch.name}
+      </div>
+
+      <div class="decision-metric">
+        Expected improvement:
+        <strong>${fmt(bestActionableSwitch.difference)}</strong>
+        (${pct(bestActionableSwitch.improvementPct)})
+      </div>
+
+      <ul>
+        <li>The replacement is inside its buy zone.</li>
+        <li>The expected edge clears the 8% actionability threshold.</li>
+        <li>Requires 2 trades.</li>
+      </ul>
+    `;
+  } else {
+    summary.className = 'position-switch-summary best-hold';
+
+    summary.innerHTML = `
+      <div class="decision-label">Best Alternative, But Not Yet</div>
+
+      <div class="decision-action">
+        ⏳ HOLD ${holding.name} FOR NOW
+      </div>
+
+      <div class="decision-metric">
+        Best mathematical switch:
+        <strong>${bestSwitch ? bestSwitch.name : 'None'}</strong>
+      </div>
+
+      <ul>
+        ${
+          bestSwitch
+            ? `<li>Projected improvement: <strong>${fmt(bestSwitch.difference)}</strong> (${pct(bestSwitch.improvementPct)}).</li>`
+            : ''
+        }
+        <li>The best switch is not both inside its buy zone and at least 8% better than holding.</li>
+        <li>Wait for a cleaner entry or a larger expected advantage.</li>
+      </ul>
+    `;
+  }
+}
+
+    const cashDifference =
+      holding.value - holdTargetValue;
+
+    box.innerHTML = `
+      <div class="mini" style="margin-bottom:12px">
+        Current position: <strong>${holding.name}</strong><br>
+        Current value: ${fmt(holding.value)}<br>
+        Estimated value if held to target: ${fmt(holdTargetValue)}
+      </div>
+
+      <div style="overflow-x:auto">
+        <table class="switch-outlook-table">
+          <tr>
+  <th>Rank</th>
+  <th>Recommendation</th>
+  <th class="num">Hold Outlook</th>
+  <th class="num">Switch Outlook</th>
+  <th class="num">Improvement</th>
+  <th>Entry</th>
+  <th>Risk</th>
+</tr>
+
+        <tr class="switch-hold-row">
+  <td>${holdIsBest ? '🥇' : '—'}</td>
+  <td><strong>Hold ${holding.name}</strong></td>
+  <td class="num">${fmt(holdTargetValue)}</td>
+  <td class="num">${fmt(holdTargetValue)}</td>
+  <td class="num">—</td>
+  <td>Current position</td>
+  <td>0 trades</td>
+</tr>
+
+          ${comparisons.map((comparison, index) => `
+  <tr ${
+  index === 0 && !holdIsBest
+    ? 'class="switch-best-row"'
+    : ''
+}>
+
+            <tr>
+
+              <td>
+  ${
+  index === 0
+    ? (holdIsBest ? '1.' : '🥇')
+    : `${index + 1}.`
+}
+</td>
+
+<td class="${index === 0 ? 'switch-best' : ''}">
+  <strong>Sell ${holding.name}</strong><br>
+  Buy ${comparison.name}
+</td>
+
+             <td class="num">${fmt(holdTargetValue)}</td>
+
+<td class="num">${fmt(comparison.switchTargetValue)}</td>
+
+<td class="num ${comparison.difference >= 0 ? 'good' : 'bad'}">
+  <strong>${fmt(comparison.difference)}</strong><br>
+  <span class="mini">${pct(comparison.improvementPct)}</span>
+</td>
+
+<td class="${comparison.inBuyZone ? 'good' : 'warn'}">
+  ${comparison.inBuyZone ? 'Buy zone' : 'Above buy zone'}
+</td>
+
+<td class="${comparison.realizesLoss ? 'switch-warning' : ''}">
+  ${
+    comparison.realizesLoss
+      ? `Locks in ${fmt(
+          Math.max(
+            0,
+            (holding.avgBuy - holding.current) * holding.qty
+          )
+        )} loss · 2 trades`
+      : '2 trades'
+  }
+</td>
+
+
+
+            </tr>
+          `).join('')}
+
+          <tr>
+  <td>—</td>
+
+  <td>
+    <strong>Sell ${holding.name}</strong><br>
+    Keep Cash
+  </td>
+
+  <td class="num">${fmt(holdTargetValue)}</td>
+
+  <td class="num">${fmt(holding.value)}</td>
+
+  <td class="num ${cashDifference >= 0 ? 'good' : 'bad'}">
+    <strong>${fmt(cashDifference)}</strong><br>
+    <span class="mini">
+      ${pct(
+        holdTargetValue > 0
+          ? cashDifference / holdTargetValue
+          : 0
+      )}
+    </span>
+  </td>
+
+  <td>Cash</td>
+
+  <td class="${
+    holding.avgBuy > 0 && holding.current < holding.avgBuy
+      ? 'switch-warning'
+      : ''
+  }">
+    ${
+      holding.avgBuy > 0 && holding.current < holding.avgBuy
+        ? 'Locks in current loss · 1 trade'
+        : 'No market upside while waiting · 1 trade'
+    }
+  </td>
+</tr>
+
+
+        </table>
+      </div>
+
+      <div class="mini" style="margin-top:10px">
+        These estimates apply only to the selected position, not your entire portfolio.
+      </div>
+    `;
+  };
+
+  select.onchange = renderSelectedPosition;
+  renderSelectedPosition();
+}
+
+
+
 
 
 function render(data, result){
@@ -524,6 +842,7 @@ renderRecommendationExplanation(result);
 renderConfidenceBreakdown(result);
 renderDeveloperDiagnostics(result);
 renderRecommendationHistory();
+renderPositionSwitchOutlook(data, result);
 
 }
 

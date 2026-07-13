@@ -123,3 +123,85 @@ body.developer-mode .developer-only {
 #clearRecommendationHistoryBtn:hover {
   border-color: #7f8da8;
 }
+
+.switch-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.switch-controls label {
+  font-weight: 600;
+  color: #cbd6ef;
+}
+
+.switch-controls select {
+  min-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid #4b5870;
+  border-radius: 8px;
+  background: #11161f;
+  color: #fff;
+}
+
+.switch-outlook-table th,
+.switch-outlook-table td {
+  white-space: nowrap;
+}
+
+.switch-best {
+  color: #42e58c;
+  font-weight: 700;
+}
+
+.switch-warning {
+  color: #ffd35a;
+  font-weight: 700;
+}
+
+.position-switch-summary {
+  margin: 14px 0 18px;
+  padding: 16px;
+  border: 1px solid #3f4d63;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.position-switch-summary.best-hold {
+  border-color: #4b5870;
+}
+
+.position-switch-summary.best-switch {
+  border-color: #42e58c;
+  background: rgba(66, 229, 140, 0.05);
+}
+
+.position-switch-summary .decision-label {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9fb0cc;
+}
+
+.position-switch-summary .decision-action {
+  margin-top: 5px;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.position-switch-summary .decision-metric {
+  margin-top: 10px;
+  font-size: 1.05rem;
+}
+
+.position-switch-summary ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.position-switch-summary li {
+  margin-bottom: 6px;
+}

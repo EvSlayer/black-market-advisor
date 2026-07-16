@@ -13,6 +13,7 @@ function analyzeHtml(html, sourceLabel=''){
     updateRecommendationOutcomes(data);
     saveRecommendationHistory(data, result);
     render(data,result);
+    checkDiscordBuyZoneAlerts(result);
     renderMoveRecords(data);
     lastData=data;
     lastResult=result;

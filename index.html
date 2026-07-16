@@ -92,6 +92,37 @@
         </div>
       </details>
     </section>
+
+<section class="card" id="notificationSettingsPanel">
+      <h2>3) Notifications</h2>
+
+      <div class="notification-settings">
+        <label class="notification-toggle">
+          <input type="checkbox" id="discordAlertsEnabled">
+          Enable Discord alerts
+        </label>
+
+        <div class="notification-field">
+          <label for="discordWebhookUrl">Discord Webhook URL</label>
+          <input
+            type="password"
+            id="discordWebhookUrl"
+            placeholder="Paste your Discord webhook URL"
+            autocomplete="off"
+          >
+          <div class="mini">
+            Stored only in this browser and never uploaded to GitHub.
+          </div>
+        </div>
+
+        <button type="button" id="testDiscordWebhookBtn">
+          Send Test Alert
+        </button>
+
+        <div id="discordWebhookStatus" class="mini"></div>
+      </div>
+    </section>
+
   </div>
 
   <section id="results" class="hidden" style="margin-top:16px">
@@ -248,6 +279,7 @@
 
   <div class="footer-note">This tool does not predict the next tick. It creates a diversified portfolio plan under the 33% cap using saved price history, buy/sell thresholds, trade costs, cash discipline, and multi-window event intelligence.</div>
 </div>
+<script src="js/discord.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

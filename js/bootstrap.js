@@ -98,3 +98,67 @@ if (clearHistoryButton) {
     renderRecommendationHistory();
   });
 }
+
+const discordEnabledInput =
+  document.getElementById('discordAlertsEnabled');
+
+const discordWebhookInput =
+  document.getElementById('discordWebhookUrl');
+
+const testDiscordButton =
+  document.getElementById('testDiscordWebhookBtn');
+
+const discordStatus =
+  document.getElementById('discordWebhookStatus');
+
+const savedDiscordSettings = loadDiscordSettings();
+
+if (discordEnabledInput) {
+  discordEnabledInput.checked = !!savedDiscordSettings.enabled;
+}
+
+if (discordWebhookInput) {
+  discordWebhookInput.value = savedDiscordSettings.webhookUrl || '';
+}
+
+function persistDiscordSettings() {
+  saveDiscordSettings({
+    enabled: !!discordEnabledInput?.checked,
+    webhookUrl: discordWebhookInput?.value.trim() || ''
+  });
+}
+
+discordEnabledInput?.addEventListener(
+  'change',
+  persistDiscordSettings
+);
+
+discordWebhookInput?.addEventListener(
+  'change',
+  persistDiscordSettings
+);
+
+testDiscordButton?.addEventListener('click', async () => {
+  persistDiscordSettings();
+
+  if (discordStatus) {
+    discordStatus.textContent = 'Sending test alert...';
+    discordStatus.className = 'mini';
+  }
+
+  try {
+    await sendDiscordTestAlert();
+
+    if (discordStatus) {
+      discordStatus.textContent =
+        'Test alert sent successfully.';
+      discordStatus.className = 'mini good';
+    }
+  } catch (error) {
+    if (discordStatus) {
+      discordStatus.textContent =
+        `Unable to send alert: ${error.message}`;
+      discordStatus.className = 'mini bad';
+    }
+  }
+});

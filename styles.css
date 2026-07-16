@@ -205,3 +205,59 @@ body.developer-mode .developer-only {
 .position-switch-summary li {
   margin-bottom: 6px;
 }
+
+.notification-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.notification-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.notification-toggle input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.notification-field {
+  display: grid;
+  gap: 6px;
+}
+
+.notification-field label {
+  font-weight: 600;
+  color: #cbd6ef;
+}
+
+.notification-field input {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #4b5870;
+  border-radius: 8px;
+  background: #11161f;
+  color: #fff;
+}
+
+#testDiscordWebhookBtn {
+  width: fit-content;
+  padding: 8px 12px;
+  border: 1px solid #4b5870;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+#testDiscordWebhookBtn:hover {
+  border-color: #7f8da8;
+}
+
+#discordWebhookStatus {
+  min-height: 18px;
+}

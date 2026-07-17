@@ -14,21 +14,53 @@
   </div>
 
 
+  <details class="card compact-toggle" open>
+  <summary>Automatic Monitoring</summary>
 
-  <details class="card bookmarklet-box compact-toggle">
-    <summary>Quick Capture Bookmarklet</summary>
-    <div class="toggle-body">
-    <div class="sub">After this advisor is hosted, drag the button below to your bookmarks bar. Then open the Black Market page and click the bookmark. It will send the current page HTML into this advisor automatically.</div>
-    <div class="row" style="margin-top:12px">
-      <label class="mini">Advisor URL</label>
-      <input id="advisorUrl" style="min-width:320px;flex:1" placeholder="https://your-site.netlify.app/" />
-      <button class="btn secondary" id="copyBookmarkletBtn" type="button">Copy Bookmarklet</button>
-      <a id="bookmarkletLink" class="bookmarklet-link" href="#">Analyze Black Market</a>
+  <div class="toggle-body">
+    <div class="sub">
+      Tampermonkey automatically captures the latest Black Market data and sends it to this advisor after each refresh.
     </div>
-    <div class="mini" style="margin-top:10px">Tip: if dragging does not work, copy the bookmarklet code and paste it into a new bookmark's URL/location field.</div>
-    <details style="margin-top:10px"><summary>Show bookmarklet code</summary><div id="bookmarkletCode" class="codebox"></div></details>
+
+    <div class="row" style="margin-top:14px; gap:12px; flex-wrap:wrap;">
+      <div class="card" style="flex:1; min-width:180px; padding:14px;">
+        <div class="mini">Connection</div>
+        <div id="monitorConnectionStatus" style="font-weight:700; margin-top:5px;">
+          Waiting for capture...
+        </div>
+      </div>
+
+      <div class="card" style="flex:1; min-width:180px; padding:14px;">
+        <div class="mini">Last Market Scan</div>
+        <div id="monitorLastScan" style="font-weight:700; margin-top:5px;">
+          Not available
+        </div>
+      </div>
+
+      <div class="card" style="flex:1; min-width:180px; padding:14px;">
+        <div class="mini">Capture Source</div>
+        <div id="monitorCaptureSource" style="font-weight:700; margin-top:5px;">
+          Not connected
+        </div>
+      </div>
     </div>
-  </details>
+
+    <div class="mini" style="margin-top:12px;">
+      Keep the Criminal Warfare Black Market tab and this advisor tab open in Firefox.
+    </div>
+
+    <div class="card" style="flex:1; min-width:180px; padding:14px;">
+  <div class="mini">Next Scan</div>
+  <div id="monitorNextScan" style="font-weight:700; margin-top:5px;">
+    Waiting...
+  </div>
+</div>
+
+  </div>
+</details>
+
+  
+
 
 
   <div class="grid">

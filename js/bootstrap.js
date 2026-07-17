@@ -24,23 +24,98 @@ function analyzeHtml(html, sourceLabel=''){
   catch(e){ err.textContent=e.message; err.classList.remove('hidden'); }
 }
 
-function refreshBookmarklet(){
-  const url=(document.getElementById('advisorUrl')?.value || location.href.split('#')[0]).trim();
-  const js = `javascript:(()=>{const u=${JSON.stringify(url)};const html=document.documentElement.outerHTML;const w=window.open(u,'_blank');let n=0;const send=()=>{try{w.postMessage({type:'BM_ADVISOR_CAPTURE',html,source:location.href,capturedAt:new Date().toISOString()},'*')}catch(e){}if(++n<24)setTimeout(send,500)};setTimeout(send,800);})();`;
-  const link=document.getElementById('bookmarkletLink');
-  const box=document.getElementById('bookmarkletCode');
-  if(link) link.href=js;
-  if(box) box.textContent=js;
+let monitorCountdownTimer = null;
+
+function startMonitorCountdown(nextRefreshAt) {
+  const nextScanEl = document.getElementById('monitorNextScan');
+
+  if (!nextScanEl || !nextRefreshAt) {
+    return;
+  }
+
+  if (monitorCountdownTimer) {
+    clearInterval(monitorCountdownTimer);
+  }
+
+  function updateCountdown() {
+    const remaining =
+      new Date(nextRefreshAt).getTime() - Date.now();
+
+    if (remaining <= 0) {
+      nextScanEl.textContent = 'Refreshing...';
+      clearInterval(monitorCountdownTimer);
+      monitorCountdownTimer = null;
+      return;
+    }
+
+    const totalSeconds = Math.floor(remaining / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    nextScanEl.textContent =
+      `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+  }
+
+  updateCountdown();
+  monitorCountdownTimer = setInterval(updateCountdown, 1000);
 }
 
-function tryImportFromBookmarklet(){
-  window.addEventListener('message', (event)=>{
-    const payload=event.data;
-    if(!payload || payload.type!=='BM_ADVISOR_CAPTURE' || !payload.html) return;
+
+
+
+
+function startAutoMonitorReceiver() {
+  window.addEventListener('message', (event) => {
+    const payload = event.data;
+
+    if (
+      !payload ||
+      payload.type !== 'BM_ADVISOR_CAPTURE' ||
+      !payload.html
+    ) {
+      return;
+    }
+
+    const connectionEl = document.getElementById('monitorConnectionStatus');
+    const lastScanEl = document.getElementById('monitorLastScan');
+    const sourceEl = document.getElementById('monitorCaptureSource');
+
+    if (connectionEl) {
+      connectionEl.textContent = 'Connected';
+    }
+
+    if (lastScanEl) {
+      const capturedDate = payload.capturedAt
+        ? new Date(payload.capturedAt)
+        : new Date();
+
+      lastScanEl.textContent = capturedDate.toLocaleString();
+    }
+
+    if (sourceEl) {
+      try {
+        const sourceUrl = new URL(payload.source);
+        sourceEl.textContent = sourceUrl.pathname;
+      } catch (error) {
+        sourceEl.textContent = payload.source || 'Black Market';
+      }
+    }
+
+    if (payload.nextRefreshAt) {
+  startMonitorCountdown(payload.nextRefreshAt);
+}
+    
     analyzeHtml(payload.html, 'game page');
-    try{ window.focus(); }catch(e){}
+
+    try {
+      window.focus();
+    } catch (error) {
+      console.warn('Unable to focus advisor window:', error);
+    }
   });
 }
+
+
 
 let lastData=null, lastResult=null;
 document.getElementById('analyzeBtn').onclick=()=>{
@@ -56,17 +131,8 @@ const askBtn=document.getElementById('askAdvisorBtn'); if(askBtn) askBtn.onclick
 const qBox=document.getElementById('advisorQuestion'); if(qBox) qBox.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter') submitAdvisorQuestion();});
 document.querySelectorAll('.advisor-chip').forEach(b=>b.addEventListener('click',()=>submitAdvisorQuestion(b.textContent)));
 document.getElementById('saveSnapshotBtn').onclick=()=>{ if(!lastData) return; const snaps=JSON.parse(localStorage.getItem('bm_snapshots')||'[]'); snaps.push({data:lastData,result:lastResult}); localStorage.setItem('bm_snapshots',JSON.stringify(snaps)); document.getElementById('parseStatus').textContent=`Snapshot saved locally (${snaps.length}).`; };
-document.getElementById('advisorUrl').value=location.href.split('#')[0];
-document.getElementById('advisorUrl').addEventListener('input',refreshBookmarklet);
-document.getElementById('copyBookmarkletBtn').onclick=async()=>{
-  refreshBookmarklet();
-  const code=document.getElementById('bookmarkletCode').textContent;
-  try{ await navigator.clipboard.writeText(code); document.getElementById('parseStatus').textContent='Bookmarklet copied.'; }
-  catch(e){ document.getElementById('parseStatus').textContent='Could not copy automatically. Open “Show bookmarklet code” and copy it manually.'; }
-};
-refreshBookmarklet();
 renderAssumptions(null);
-tryImportFromBookmarklet();
+startAutoMonitorReceiver();
 
 const developerToggle = document.getElementById('developerModeToggle');
 

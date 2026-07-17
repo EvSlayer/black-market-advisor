@@ -70,7 +70,7 @@ function explainCommodity(o,result,q){
   } else if(falling){
     body=`Your concern is valid. ${o.name} is ${trend.label} over the latest captured points (${pct(trend.pct)}), and the current price is around the ${Math.round(perc*100)}th percentile of saved history. ${entryLabel(o)}. The advisor should not buy merely because the target is high; the entry threshold, event signal, and trade cost must still justify it.${whyBuy && !o.inManualBuyZone?' At this price I would treat it as a watch, not an automatic buy.':''}`;
   } else {
-    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`If the whole current portfolio were hypothetically exposed at this price, the target-equivalent value would be about ${fmt(expectedAtTarget)}—but the 33% rule limits the actual allocation.`:''}`;
+    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to 33% per commodity and must pass the trade-cost test.`:''}`;
   }
   const evidence=`Current ${fmt(o.price)} · Buy threshold ${fmt(o.buyThreshold)} · Sell threshold ${fmt(o.sellThreshold)} · Historical percentile ${Math.round(perc*100)}th · Recent trend ${trend.label} ${pct(trend.pct)}.${eventText}`;
   return {title,body,evidence};
@@ -185,7 +185,10 @@ function askAdvisor(question){
   if(/33%|33 percent|thirty three|over the cap|max is 33|maximum.*33/.test(q)) return capAnswer(lastResult);
   if(/worth.*trade|trade.*worth|too many trade|trades left|opportunity cost|wasting.*trade/.test(q)){
     const p=lastResult.portfolioPlan;
-    return {title:p.opportunityCostDecision,body:`The proposed plan uses ${p.trades.length} trade${p.trades.length===1?'':'s'} with ${p.tradesRemaining} left today and reserves ${p.tradeReserve}. The projected improvement is ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}), or about ${fmt(p.gainPerTrade)} per trade. ${p.meaningfulRebalance?'That clears the advisor’s opportunity-cost test.':'That does not clear the advisor’s opportunity-cost test, so waiting is preferred.'}`,evidence:`Minimum edge: ${pct(p.requiredOverallPct)} overall and ${fmt(p.requiredGainPerTrade)} per trade.`};
+    const candidateTrades=p.candidateTrades||p.trades||[];
+    const recommendedTrades=p.recommendedTrades||[];
+    const planLabel=p.meaningfulRebalance?'recommended rebalance':'candidate rebalance';
+    return {title:p.opportunityCostDecision,body:`The ${planLabel} uses ${candidateTrades.length} trade${candidateTrades.length===1?'':'s'} with ${p.tradesRemaining} left today and reserves ${p.tradeReserve}. The projected difference is ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}), or about ${fmt(p.gainPerTrade)} per candidate trade. ${p.meaningfulRebalance?`It clears the advisor’s opportunity-cost test, so ${recommendedTrades.length} trade${recommendedTrades.length===1?' is':'s are'} actionable now.`:'It does not clear the advisor’s opportunity-cost test, so the candidate was rejected and zero trades are recommended.'}`,evidence:`Minimum edge: ${pct(p.requiredOverallPct)} overall and ${fmt(p.requiredGainPerTrade)} per trade.`};
   }
   if(/cash|do nothing|wait|stay out|owning nothing/.test(q) && !entities.length){
     const qualifying=lastResult.commodityOptions.filter(o=>o.inManualBuyZone).sort((a,b)=>b.score-a.score);
@@ -211,7 +214,11 @@ function askAdvisor(question){
   }
   if(/why|recommend|suggest|plan|portfolio/.test(q)){
     const p=lastResult.portfolioPlan;
-    return {title:`Why the advisor says “${lastResult.action}”`,body:`The plan is built from qualifying buy zones, the 33% cap, current holdings, realized-loss protection, active event evidence, and limited trades. It projects ${fmt(p.projectedPlan)} for the proposed mix versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}).`,evidence:`Decision confidence ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
+    const isActionable=p.meaningfulRebalance && lastResult.action==='REBALANCE PORTFOLIO';
+    const decisionText=isActionable
+      ? `The recommended capped mix projects ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}).`
+      : `The optimizer tested a capped candidate mix projecting ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}). Because that candidate did not justify the trades, it was rejected; the actionable recommendation is ${lastResult.action} with zero immediate trades.`;
+    return {title:`Why the advisor says “${lastResult.action}”`,body:`The decision is built from qualifying buy zones, the 33% cap, current holdings, realized-loss protection, active event evidence, and limited trades. ${decisionText}`,evidence:`Confidence in ${lastResult.action}: ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
   }
   return {title:'Here is what the data can answer.',body:'I could not confidently identify the exact intent, but you can ask about a commodity by nickname, compare two commodities, challenge the 33% allocation, ask whether a switch is worth the trades, question a falling trend, or ask why cash is being held. Try naming the commodity or the specific concern.',evidence:'Examples: “Why pills?”, “Art vs Uranium?”, “Is this worth two trades?”, “Why not cash?”, “Uranium is falling—still buy?”'};
 }

@@ -219,15 +219,50 @@ function analyze(data){
     decisionConfidence = Math.round(Math.max(45, Math.min(96, confidenceBase + Math.abs(edgePct)*160 - ((chosen?.tradesNeeded||0)*2))));
   }
   const portfolioPlan = buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues);
-  // The new rules make the 33%-cap portfolio plan the primary recommendation.
-  // Legacy single-stock analysis remains below as supporting detail.
+  // The 33%-cap portfolio plan is the single source of truth for public advice.
+  // Legacy single-stock analysis remains available only as explicitly theoretical support.
+  const legacyDecision = {action, chosen, risk: null, sellPressure, edge, edgePct};
   action = portfolioPlan.headline;
-  if(action==='REBALANCE PORTFOLIO') decisionConfidence = Math.max(60, Math.min(94, 60 + portfolioPlan.selected.length*9 + Math.min(7, portfolioPlan.trades.length)));
-  else if(action==='HOLD CURRENT MIX') decisionConfidence = Math.max(68, decisionConfidence||68);
-  else if(action==='WAIT IN CASH') decisionConfidence = Math.max(58, Math.min(88, 62 + (3-portfolioPlan.selected.length)*6));
+  const recommendedTrades = portfolioPlan.recommendedTrades || [];
+  const actionableImprovement = portfolioPlan.meaningfulRebalance ? portfolioPlan.projectedImprovement : 0;
+  const actionableImprovementPct = portfolioPlan.meaningfulRebalance ? portfolioPlan.improvementPct : 0;
+
+  if(action==='REBALANCE PORTFOLIO') {
+    decisionConfidence = Math.max(60, Math.min(94, 60 + portfolioPlan.selected.length*9 + Math.min(7, recommendedTrades.length)));
+  } else if(action==='HOLD CURRENT MIX') {
+    decisionConfidence = Math.max(68, decisionConfidence||68);
+  } else if(action==='WAIT IN CASH') {
+    decisionConfidence = Math.max(58, Math.min(88, 62 + (3-portfolioPlan.selected.length)*6));
+  }
+
+  const pressureRank = {None:0,Low:1,Medium:2,'Medium-High':3,High:4};
+  const portfolioSellPressure = positionAssessments.reduce((highest,p)=>
+    pressureRank[p.sellPressure] > pressureRank[highest] ? p.sellPressure : highest, 'None');
+  const risk = action==='WAIT IN CASH'
+    ? 'Medium'
+    : action==='REBALANCE PORTFOLIO'
+      ? (portfolioPlan.overBudget ? 'High' : portfolioPlan.improvementPct < .12 ? 'Medium' : 'Low')
+      : pressureRank[portfolioSellPressure] >= 3 ? 'Medium' : 'Low';
+  sellPressure = portfolioSellPressure;
 
   const dataPoints = Math.max(...data.commodities.map(c=>c.history?.length||0),0);
   const dataConfidence = Math.round(Math.max(15, Math.min(92, 20 + dataPoints*0.9)));
-  const risk = action.includes('CASH') ? 'Medium' : chosen.pos>.95 ? 'High' : (chosen.pos>.85 || Math.abs(edge/currentValue)<.03 ? 'Medium' : 'Low');
-  return {options,commodityOptions,splitOptions,cashOption,currentOpt,best,bestSwitch,bestGrowth,chosen,action,currentValue,params,allocationMode:allocationMode(),decisionConfidence,dataConfidence,risk,thresholdDollar,thresholdPct,baselineExpected,currentProfitPct,currentRemainingUpside,cashCompelling,switchCompelling,rawSwitchCompelling,replacementInBuyZone,replacementExtremeEdge,currentOverExtended,sellPressure,bestCashBuyIsClean,meaningfulHoldings,ignoredDust,dustThreshold,majorThresholdPct,positionAssessments,portfolioOpt,dominantHolding,portfolioPlan,eventMemory};
+  const primaryDecision = {
+    action,
+    recommendedTrades,
+    actionableImprovement,
+    actionableImprovementPct,
+    risk,
+    sellPressure,
+    selected: action==='REBALANCE PORTFOLIO' ? portfolioPlan.selected : positionAssessments.map(p=>p.option),
+    candidatePlan: {
+      allocations: portfolioPlan.allocations,
+      trades: portfolioPlan.candidateTrades || portfolioPlan.trades || [],
+      projectedImprovement: portfolioPlan.projectedImprovement,
+      improvementPct: portfolioPlan.improvementPct,
+      opportunityCostDecision: portfolioPlan.opportunityCostDecision
+    }
+  };
+
+  return {options,commodityOptions,splitOptions,cashOption,currentOpt,best,bestSwitch,bestGrowth,chosen,legacyDecision,primaryDecision,recommendedTrades,actionableImprovement,actionableImprovementPct,action,currentValue,params,allocationMode:allocationMode(),decisionConfidence,dataConfidence,risk,thresholdDollar,thresholdPct,baselineExpected,currentProfitPct,currentRemainingUpside,cashCompelling,switchCompelling,rawSwitchCompelling,replacementInBuyZone,replacementExtremeEdge,currentOverExtended,sellPressure,bestCashBuyIsClean,meaningfulHoldings,ignoredDust,dustThreshold,majorThresholdPct,positionAssessments,portfolioOpt,dominantHolding,portfolioPlan,eventMemory};
 }

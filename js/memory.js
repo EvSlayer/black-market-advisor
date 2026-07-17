@@ -100,6 +100,22 @@ function saveRecommendationHistory(data, result) {
   if (!data || !result) return [];
 
   const history = loadRecommendationHistory();
+  const plan = result.portfolioPlan || {};
+  const isRebalance = result.action === 'REBALANCE PORTFOLIO' && plan.meaningfulRebalance;
+  const isHold = result.action === 'HOLD CURRENT MIX';
+
+  const currentHoldingNames = (result.positionAssessments || []).map(item => item.name || item.option?.name).filter(Boolean);
+  const currentHoldingKeys = (result.positionAssessments || []).map(item => item.key || item.option?.key).filter(Boolean);
+  const selectedNames = isRebalance
+    ? (plan.selected || []).map(item => item.name)
+    : isHold
+      ? currentHoldingNames
+      : [];
+  const selectedKeys = isRebalance
+    ? (plan.selected || []).map(item => item.key)
+    : isHold
+      ? currentHoldingKeys
+      : [];
 
   const entry = {
     id: `${data.parsedAt || Date.now()}|${result.action}`,
@@ -109,76 +125,37 @@ function saveRecommendationHistory(data, result) {
     dataConfidence: result.dataConfidence ?? null,
     risk: result.risk || null,
     portfolioValue: result.currentValue || data.totalPortfolio || 0,
-    projectedImprovement:
-      result.portfolioPlan?.projectedImprovement || 0,
-    improvementPct:
-      result.portfolioPlan?.improvementPct || 0,
-    selectedCommodities:
-      result.portfolioPlan?.selected?.map(item => item.name) || [],
-      selectedCommodityKeys:
-  result.portfolioPlan?.selected?.map(item => item.key) || [],
-    tradesRequired:
-  result.portfolioPlan?.trades?.length || 0,
-
-startPrices: Object.fromEntries(
-  (data.commodities || []).map(item => [
-    item.key,
-    Number(item.price) || 0
-  ])
-)
+    projectedImprovement: isRebalance ? (plan.projectedImprovement || 0) : 0,
+    improvementPct: isRebalance ? (plan.improvementPct || 0) : 0,
+    selectedCommodities: selectedNames,
+    selectedCommodityKeys: selectedKeys,
+    tradesRequired: isRebalance ? (plan.trades?.length || 0) : 0,
+    rejectedCandidate: !isRebalance && plan.trades?.length
+      ? {
+          projectedImprovement: plan.projectedImprovement || 0,
+          improvementPct: plan.improvementPct || 0,
+          tradesRequired: plan.trades.length,
+          selectedCommodities: (plan.selected || []).map(item => item.name)
+        }
+      : null,
+    startPrices: Object.fromEntries((data.commodities || []).map(item => [item.key, Number(item.price) || 0]))
   };
 
   const latest = history[0];
+  const sameAction = latest?.action === entry.action;
+  const sameSelected = JSON.stringify(latest?.selectedCommodityKeys || []) === JSON.stringify(entry.selectedCommodityKeys || []);
+  const sameTrades = latest?.tradesRequired === entry.tradesRequired;
+  const sameImprovement = Math.abs((latest?.improvementPct || 0) - (entry.improvementPct || 0)) < 0.01;
+  const sameConfidence = Math.abs((latest?.confidence || 0) - (entry.confidence || 0)) < 3;
+  const minutesSinceLatest = latest
+    ? (new Date(entry.capturedAt).getTime() - new Date(latest.capturedAt).getTime()) / 60000
+    : Infinity;
+  const isNearDuplicate = latest && sameAction && sameSelected && sameTrades && sameImprovement && sameConfidence && minutesSinceLatest < 30;
 
-const sameAction =
-  latest?.action === entry.action;
-
-const sameSelected =
-  JSON.stringify(latest?.selectedCommodityKeys || []) ===
-  JSON.stringify(entry.selectedCommodityKeys || []);
-
-const sameTrades =
-  latest?.tradesRequired === entry.tradesRequired;
-
-const sameImprovement =
-  Math.abs(
-    (latest?.improvementPct || 0) -
-    (entry.improvementPct || 0)
-  ) < 0.01;
-
-const sameConfidence =
-  Math.abs(
-    (latest?.confidence || 0) -
-    (entry.confidence || 0)
-  ) < 3;
-
-const minutesSinceLatest = latest
-  ? (
-      new Date(entry.capturedAt).getTime() -
-      new Date(latest.capturedAt).getTime()
-    ) / 60000
-  : Infinity;
-
-const isNearDuplicate =
-  latest &&
-  sameAction &&
-  sameSelected &&
-  sameTrades &&
-  sameImprovement &&
-  sameConfidence &&
-  minutesSinceLatest < 30;
-
-if (!isNearDuplicate && !history.some(item => item.id === entry.id)) {
-  history.unshift(entry);
-}
+  if (!isNearDuplicate && !history.some(item => item.id === entry.id)) history.unshift(entry);
 
   const trimmedHistory = history.slice(0, 500);
-
-  localStorage.setItem(
-    'bm_recommendation_history_v1',
-    JSON.stringify(trimmedHistory)
-  );
-
+  localStorage.setItem('bm_recommendation_history_v1', JSON.stringify(trimmedHistory));
   return trimmedHistory;
 }
 

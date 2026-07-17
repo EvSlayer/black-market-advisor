@@ -105,6 +105,7 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   }
 
   // Evaluate whether the rebalance is actually worth scarce daily trades.
+  const candidateTrades = trades.slice();
   const projectedCurrent = (data.cash||0) + holdingValues.reduce((sum,h)=>{
     const o=optionByKey[h.key];
     return sum + (o && o.price>0 ? (h.value||0)*(o.target/o.price) : (h.value||0));
@@ -116,12 +117,12 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   },0);
   const projectedImprovement=projectedPlan-projectedCurrent;
   const improvementPct=currentValue?projectedImprovement/currentValue:0;
-  const gainPerTrade=trades.length?projectedImprovement/trades.length:0;
+  const gainPerTrade=candidateTrades.length?projectedImprovement/candidateTrades.length:0;
 
   // Opportunity-cost test: a mathematically better portfolio is not automatically
   // worth spending scarce trades on. The required edge rises with the number of
   // trades consumed, while still allowing a truly exceptional switch through.
-  const requiredOverallPct = Math.max(.08, trades.length*.03);
+  const requiredOverallPct = Math.max(.08, candidateTrades.length*.03);
   const requiredGainPerTradePct = .04;
   const requiredGainPerTrade = currentValue*requiredGainPerTradePct;
   const exceptionalEdge = improvementPct>=.25;
@@ -136,9 +137,13 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
 
   // Never recommend a plan that exceeds today's available trades. Also preserve a
   // small reserve so the advisor does not burn all 10 trades early in the day.
-  const overBudget=trades.length>actionableTradeBudget;
-  const deferredTrades=overBudget ? trades.slice(actionableTradeBudget) : [];
-  if(overBudget) trades=trades.slice(0,actionableTradeBudget);
+  const overBudget=candidateTrades.length>actionableTradeBudget;
+  const deferredTrades=overBudget ? candidateTrades.slice(actionableTradeBudget) : [];
+  const executableCandidateTrades=candidateTrades.slice(0,actionableTradeBudget);
+  const recommendedTrades=meaningfulRebalance ? executableCandidateTrades : [];
+  // Keep `trades` as the candidate plan for backward-compatible diagnostics.
+  // Public/actionable surfaces must use `recommendedTrades`.
+  trades=candidateTrades;
 
   const currentMixDistance=allocations.reduce((s,a)=>s+Math.abs((currentByKey[a.key]||0)-a.dollars),0) + holdingValues.filter(h=>!targetByKey[h.key]).reduce((s,h)=>s+(h.value||0),0);
   const nearPlan=currentMixDistance <= currentValue*.05;
@@ -146,5 +151,5 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   if(selected.length && (nearPlan || !meaningfulRebalance)) headline='HOLD CURRENT MIX';
   else if(selected.length && actionableTradeBudget>0) headline='REBALANCE PORTFOLIO';
   else if(selected.length) headline='HOLD CURRENT MIX';
-  return {cap,allocations,trades,selected,eligibleCount:eligible.length,cashPct,nearPlan,headline,tradesRemaining,tradeReserve,actionableTradeBudget,overBudget,deferredTrades,projectedCurrent,projectedPlan,projectedImprovement,improvementPct,gainPerTrade,meaningfulRebalance,requiredOverallPct,requiredGainPerTradePct,requiredGainPerTrade,opportunityCostDecision,protectedLossKeys:[...protectedLossKeys],lossNotes};
+  return {cap,allocations,trades,candidateTrades,recommendedTrades,selected,eligibleCount:eligible.length,cashPct,nearPlan,headline,tradesRemaining,tradeReserve,actionableTradeBudget,overBudget,deferredTrades,projectedCurrent,projectedPlan,projectedImprovement,improvementPct,gainPerTrade,meaningfulRebalance,requiredOverallPct,requiredGainPerTradePct,requiredGainPerTrade,opportunityCostDecision,protectedLossKeys:[...protectedLossKeys],lossNotes};
 }

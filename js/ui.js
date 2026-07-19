@@ -7,7 +7,7 @@ function renderRecommendationExplanation(result) {
 
   if (result.action === 'REBALANCE PORTFOLIO') {
     why.push('The proposed portfolio has a meaningful expected advantage over the current mix.');
-    why.push('Each commodity remains within the 33% allocation cap.');
+    why.push('Each commodity remains within the 50% allocation cap.');
     why.push('The expected improvement is large enough to justify the required trades.');
   }
 
@@ -332,7 +332,7 @@ function renderPositionSwitchOutlook(data, result) {
 
   const holdings = result.positionAssessments || [];
   const options = result.commodityOptions || [];
-  const cap = result.portfolioPlan?.cap || 0.33;
+  const cap = result.portfolioPlan?.cap || 0.50;
   const portfolioValue = result.currentValue || data.totalPortfolio || 0;
   const capDollars = portfolioValue * cap;
 
@@ -400,21 +400,21 @@ function renderPositionSwitchOutlook(data, result) {
           <div class="decision-label">Best Decision</div>
           <div class="decision-action">✅ HOLD ${holding.name}</div>
           <div class="decision-metric">Expected value: <strong>${fmt(holdTargetValue)}</strong></div>
-          <ul><li>Every legal 33%-capped switch performs worse than holding.</li><li>No trades required.</li></ul>`;
+          <ul><li>Every legal 50%-capped switch performs worse than holding.</li><li>No trades required.</li></ul>`;
       } else if (bestActionableSwitch) {
         summary.className = 'position-switch-summary best-switch';
         summary.innerHTML = `
           <div class="decision-label">Switch Now</div>
           <div class="decision-action">🔄 SELL ${holding.name}<br>BUY ${bestActionableSwitch.name}</div>
           <div class="decision-metric">Expected improvement: <strong>${fmt(bestActionableSwitch.difference)}</strong> (${pct(bestActionableSwitch.improvementPct)})</div>
-          <ul><li>The replacement is inside its buy zone.</li><li>The expected edge clears the 8% actionability threshold.</li><li>The purchase is limited to the room available under the 33% cap.</li><li>${bestActionableSwitch.leftoverCash > 1 ? `${fmt(bestActionableSwitch.leftoverCash)} remains in cash.` : 'No material cash remains.'}</li></ul>`;
+          <ul><li>The replacement is inside its buy zone.</li><li>The expected edge clears the 8% actionability threshold.</li><li>The purchase is limited to the room available under the 50% cap.</li><li>${bestActionableSwitch.leftoverCash > 1 ? `${fmt(bestActionableSwitch.leftoverCash)} remains in cash.` : 'No material cash remains.'}</li></ul>`;
       } else {
         summary.className = 'position-switch-summary best-hold';
         summary.innerHTML = `
           <div class="decision-label">Best Alternative, But Not Yet</div>
           <div class="decision-action">⏳ HOLD ${holding.name} FOR NOW</div>
           <div class="decision-metric">Best legal switch: <strong>${bestSwitch ? bestSwitch.name : 'None'}</strong></div>
-          <ul>${bestSwitch ? `<li>Projected improvement: <strong>${fmt(bestSwitch.difference)}</strong> (${pct(bestSwitch.improvementPct)}).</li>` : ''}<li>The best switch is not both inside its buy zone and at least 8% better than holding.</li><li>All comparisons respect the 33% cap.</li></ul>`;
+          <ul>${bestSwitch ? `<li>Projected improvement: <strong>${fmt(bestSwitch.difference)}</strong> (${pct(bestSwitch.improvementPct)}).</li>` : ''}<li>The best switch is not both inside its buy zone and at least 8% better than holding.</li><li>All comparisons respect the 50% cap.</li></ul>`;
       }
     }
 
@@ -436,7 +436,7 @@ function renderPositionSwitchOutlook(data, result) {
           </tr>`).join('')}
         <tr><td>—</td><td><strong>Sell ${holding.name}</strong><br>Keep Cash</td><td class="num">${fmt(holdTargetValue)}</td><td class="num">${fmt(holding.value)}</td><td class="num ${cashDifference >= 0 ? 'good' : 'bad'}"><strong>${fmt(cashDifference)}</strong><br><span class="mini">${pct(holdTargetValue > 0 ? cashDifference / holdTargetValue : 0)}</span></td><td>Cash</td><td>100% cash</td><td class="${holding.avgBuy > 0 && holding.current < holding.avgBuy ? 'switch-warning' : ''}">${holding.avgBuy > 0 && holding.current < holding.avgBuy ? 'Locks in current loss · 1 trade' : 'No market upside while waiting · 1 trade'}</td></tr>
       </table></div>
-      <div class="mini" style="margin-top:10px">These estimates apply only to the selected position. Replacement purchases are capped so the full portfolio remains within the 33% maximum per commodity.</div>`;
+      <div class="mini" style="margin-top:10px">These estimates apply only to the selected position. Replacement purchases are capped so the full portfolio remains within the 50% maximum per commodity.</div>`;
   };
 
   select.onchange = renderSelectedPosition;
@@ -591,7 +591,7 @@ a.key === '__cash'
   ${
     result.action === 'HOLD CURRENT MIX'
       ? 'The advisor recommends continuing to hold this portfolio. No rebalance currently provides enough expected benefit to justify using trades.'
-      : 'Maximum recommended allocation per commodity: 33%. Cash is intentional when fewer than three commodities meet their buy thresholds.'
+      : 'Maximum recommended allocation per commodity: 50%. Cash is intentional when fewer than three commodities meet their buy thresholds.'
   }
 </div>`;
   const pros=[]; const cons=[];
@@ -608,7 +608,7 @@ a.key === '__cash'
     if(pplan.cashPct > 0) cons.push(`${Math.round(pplan.cashPct*100)}% of the candidate allocation would remain in cash.`);
   } else if(result.action === 'REBALANCE PORTFOLIO'){
     pros.push(`The capped rebalance is projected to improve the outlook by ${fmt(pplan.projectedImprovement)} (${pct(pplan.improvementPct)}).`);
-    pros.push('Every recommended allocation remains at or below 33%.');
+    pros.push('Every recommended allocation remains at or below 50%.');
     cons.push(`The plan uses ${pplan.trades.length} trade${pplan.trades.length===1?'':'s'}.`);
     cons.push('Projected targets are estimates and are not guaranteed.');
   } else {
@@ -685,7 +685,7 @@ a.key === '__cash'
   }
   waiting.push('A new market event could change the assessment.');
   document.getElementById('waitingFor').innerHTML = `<ul>${waiting.slice(0,5).map(x=>`<li>${x}</li>`).join('')}</ul>`;
-  document.getElementById('alternativesTable').innerHTML = `<caption style="text-align:left;padding-bottom:10px" class="mini"><strong>Theoretical single-option comparisons.</strong> Commodity rows ignore the 33% cap and are not trade recommendations; use the primary portfolio plan for actionable advice.</caption><tr><th>Rank</th><th>Option</th><th class="num">Current</th><th class="num">Target</th><th class="num">Expected portfolio</th><th class="num">Extra vs now</th><th class="num">Vs hold</th><th class="num">Trades</th><th class="num">Score</th></tr>` + result.options.map((o,i)=>{
+  document.getElementById('alternativesTable').innerHTML = `<caption style="text-align:left;padding-bottom:10px" class="mini"><strong>Theoretical single-option comparisons.</strong> Commodity rows ignore the 50% cap and are not trade recommendations; use the primary portfolio plan for actionable advice.</caption><tr><th>Rank</th><th>Option</th><th class="num">Current</th><th class="num">Target</th><th class="num">Expected portfolio</th><th class="num">Extra vs now</th><th class="num">Vs hold</th><th class="num">Trades</th><th class="num">Score</th></tr>` + result.options.map((o,i)=>{
     const isCurrent = o.key===result.currentOpt?.key || o.type==='portfolio';
     const vsHoldText = isCurrent ? '—' : fmt(o.vsHold);
     const vsHoldClass = isCurrent ? '' : (o.vsHold>=0?'good':'bad');

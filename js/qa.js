@@ -50,9 +50,9 @@ function rankOfOption(result,key){
   const i=rows.findIndex(o=>o.key===key); return i<0?null:i+1;
 }
 function capAnswer(result){
-  const bad=(result?.portfolioPlan?.allocations||[]).filter(a=>a.key!=='__cash' && a.pct>.33001);
-  if(bad.length) return {title:'You found an allocation bug.',body:`The 33% limit is hard. ${bad.map(a=>`${a.name} is shown at ${Math.round(a.pct*100)}%`).join(', ')}. Anything above 33% should be reduced to 33%, with the remainder kept as cash or assigned to another qualifying commodity.`,evidence:'The optimizer should never allocate more than 33.0% to one commodity.'};
-  return {title:'The current plan respects the 33% cap.',body:'No commodity in the recommended allocation is above 33%. A displayed 34% should only be cash—the leftover created because three 33% positions total 99%.',evidence:'Commodity cap: 33%; cash is not a commodity and may hold the remaining 1% or more.'};
+  const bad=(result?.portfolioPlan?.allocations||[]).filter(a=>a.key!=='__cash' && a.pct>.50001);
+  if(bad.length) return {title:'You found an allocation bug.',body:`The 50% limit is hard. ${bad.map(a=>`${a.name} is shown at ${Math.round(a.pct*100)}%`).join(', ')}. Anything above 50% should be reduced to 50%, with the remainder kept as cash or assigned to another qualifying commodity.`,evidence:'The optimizer should never allocate more than 50.0% to one commodity.'};
+  return {title:'The current plan respects the 50% cap.',body:'No commodity in the recommended allocation is above 50%. A displayed 34% should only be cash—the leftover created because three 50% positions total 99%.',evidence:'Commodity cap: 50%; cash is not a commodity and may hold the remaining 1% or more.'};
 }
 function explainCommodity(o,result,q){
   const trend=recentTrend(o); const perc=pricePercentile(o); const rank=rankOfOption(result,o.key);
@@ -66,11 +66,11 @@ function explainCommodity(o,result,q){
   let title=`Assessment: ${o.name}`;
   let body='';
   if(worst){
-    body=`Past yield alone is not the reason to buy it. The advisor is evaluating the entry now: ${o.name} is ${entryLabel(o)}, ranks #${rank||'—'} by the current model, and has ${pct(upside)} upside to the estimated target. A historically weak commodity should only receive allocation after stronger qualifying opportunities reach the 33% cap—or if its current entry is unusually cheap.`;
+    body=`Past yield alone is not the reason to buy it. The advisor is evaluating the entry now: ${o.name} is ${entryLabel(o)}, ranks #${rank||'—'} by the current model, and has ${pct(upside)} upside to the estimated target. A historically weak commodity should only receive allocation after stronger qualifying opportunities reach the 50% cap—or if its current entry is unusually cheap.`;
   } else if(falling){
     body=`Your concern is valid. ${o.name} is ${trend.label} over the latest captured points (${pct(trend.pct)}), and the current price is around the ${Math.round(perc*100)}th percentile of saved history. ${entryLabel(o)}. The advisor should not buy merely because the target is high; the entry threshold, event signal, and trade cost must still justify it.${whyBuy && !o.inManualBuyZone?' At this price I would treat it as a watch, not an automatic buy.':''}`;
   } else {
-    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to 33% per commodity and must pass the trade-cost test.`:''}`;
+    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to 50% per commodity and must pass the trade-cost test.`:''}`;
   }
   const evidence=`Current ${fmt(o.price)} · Buy threshold ${fmt(o.buyThreshold)} · Sell threshold ${fmt(o.sellThreshold)} · Historical percentile ${Math.round(perc*100)}th · Recent trend ${trend.label} ${pct(trend.pct)}.${eventText}`;
   return {title,body,evidence};
@@ -182,7 +182,7 @@ function askAdvisor(question){
     const moveAns=moveRecordAnswer(q,entities,lastData);
     if(moveAns) return moveAns;
   }
-  if(/33%|33 percent|thirty three|over the cap|max is 33|maximum.*33/.test(q)) return capAnswer(lastResult);
+  if(/50%|50 percent|thirty three|over the cap|max is 50|maximum.*50/.test(q)) return capAnswer(lastResult);
   if(/worth.*trade|trade.*worth|too many trade|trades left|opportunity cost|wasting.*trade/.test(q)){
     const p=lastResult.portfolioPlan;
     const candidateTrades=p.candidateTrades||p.trades||[];
@@ -218,9 +218,9 @@ function askAdvisor(question){
     const decisionText=isActionable
       ? `The recommended capped mix projects ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}).`
       : `The optimizer tested a capped candidate mix projecting ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}). Because that candidate did not justify the trades, it was rejected; the actionable recommendation is ${lastResult.action} with zero immediate trades.`;
-    return {title:`Why the advisor says “${lastResult.action}”`,body:`The decision is built from qualifying buy zones, the 33% cap, current holdings, realized-loss protection, active event evidence, and limited trades. ${decisionText}`,evidence:`Confidence in ${lastResult.action}: ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
+    return {title:`Why the advisor says “${lastResult.action}”`,body:`The decision is built from qualifying buy zones, the 50% cap, current holdings, realized-loss protection, active event evidence, and limited trades. ${decisionText}`,evidence:`Confidence in ${lastResult.action}: ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
   }
-  return {title:'Here is what the data can answer.',body:'I could not confidently identify the exact intent, but you can ask about a commodity by nickname, compare two commodities, challenge the 33% allocation, ask whether a switch is worth the trades, question a falling trend, or ask why cash is being held. Try naming the commodity or the specific concern.',evidence:'Examples: “Why pills?”, “Art vs Uranium?”, “Is this worth two trades?”, “Why not cash?”, “Uranium is falling—still buy?”'};
+  return {title:'Here is what the data can answer.',body:'I could not confidently identify the exact intent, but you can ask about a commodity by nickname, compare two commodities, challenge the 50% allocation, ask whether a switch is worth the trades, question a falling trend, or ask why cash is being held. Try naming the commodity or the specific concern.',evidence:'Examples: “Why pills?”, “Art vs Uranium?”, “Is this worth two trades?”, “Why not cash?”, “Uranium is falling—still buy?”'};
 }
 function renderMoveRecords(data){
   const table=document.getElementById('moveRecordsTable');

@@ -219,7 +219,7 @@ function analyze(data){
     decisionConfidence = Math.round(Math.max(45, Math.min(96, confidenceBase + Math.abs(edgePct)*160 - ((chosen?.tradesNeeded||0)*2))));
   }
   const portfolioPlan = buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues);
-  // The 33%-cap portfolio plan is the single source of truth for public advice.
+  // The 50%-cap portfolio plan is the single source of truth for public advice.
   // Legacy single-stock analysis remains available only as explicitly theoretical support.
   const legacyDecision = {action, chosen, risk: null, sellPressure, edge, edgePct};
   action = portfolioPlan.headline;

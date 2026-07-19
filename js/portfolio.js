@@ -26,8 +26,8 @@ function makeSplitOption(a,b,currentValue,cashIfLiquidated,currentHolding){
 }
 
 function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues){
-  const cap=.33, tolerance=.012;
-  const tradesRemaining = Number.isFinite(data.tradesRemaining) ? data.tradesRemaining : 10;
+  const cap=.50, tolerance=.012;
+  const tradesRemaining = Number.isFinite(data.tradesRemaining) ? data.tradesRemaining : 12;
   const tradeReserve = Math.min(3, Math.max(1, Math.floor(tradesRemaining*.25)));
   const actionableTradeBudget = Math.max(0, tradesRemaining-tradeReserve);
   const currentByKey=Object.fromEntries(holdingValues.map(h=>[h.key,h.value||0]));
@@ -41,7 +41,7 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   // buy-zone candidate. A loss position is preserved unless the replacement's
   // expected growth multiple is materially better or the holding itself is in a
   // sell/danger zone. This is not treating the purchase price as magic; it is a
-  // churn-control rule designed around the 10-trades-per-day limit.
+  // churn-control rule designed around the 12-trades-per-day limit.
   const bestEligible=eligible[0]||null;
   const protectedLossKeys=new Set();
   const lossNotes=[];
@@ -60,7 +60,7 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
 
   const allocations=[];
   let used=0;
-  // Preserve protected loss positions first, capped at the game's 33% rule.
+  // Preserve protected loss positions first, capped at the game's 50% rule.
   for(const h of holdingValues.filter(h=>protectedLossKeys.has(h.key)).sort((a,b)=>(b.value||0)-(a.value||0))){
     const o=optionByKey[h.key];
     const pct=Math.min(cap, Math.max(0,(h.value||0)/Math.max(1,currentValue)), 1-used);
@@ -86,7 +86,7 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   }
 
   const cashPct=Math.max(0,1-used);
-  if(cashPct>.0001) allocations.push({key:'__cash',name:'Cash',pct:cashPct,dollars:currentValue*cashPct,reason:eligible.length<3?'No additional commodity meets its buy threshold':'33% cap leaves a reserve'});
+  if(cashPct>.0001) allocations.push({key:'__cash',name:'Cash',pct:cashPct,dollars:currentValue*cashPct,reason:eligible.length<3?'No additional commodity meets its buy threshold':'50% cap leaves a reserve'});
   const targetByKey=Object.fromEntries(allocations.map(a=>[a.key,a.dollars]));
   let trades=[];
   for(const h of holdingValues){
@@ -136,7 +136,7 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
       : 'Not worth the trades yet';
 
   // Never recommend a plan that exceeds today's available trades. Also preserve a
-  // small reserve so the advisor does not burn all 10 trades early in the day.
+  // small reserve so the advisor does not burn all 12 trades early in the day.
   const overBudget=candidateTrades.length>actionableTradeBudget;
   const deferredTrades=overBudget ? candidateTrades.slice(actionableTradeBudget) : [];
   const executableCandidateTrades=candidateTrades.slice(0,actionableTradeBudget);

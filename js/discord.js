@@ -1,15 +1,15 @@
-const DISCORD_SETTINGS_KEY = 'bm_discord_settings_v1';
+const DISCORD_SETTINGS_KEY = 'bm_discord_settings_v2';
+const DISCORD_SERVER_URL = 'http://localhost:3000/send-alert';
 
 function loadDiscordSettings() {
   try {
     return JSON.parse(
       localStorage.getItem(DISCORD_SETTINGS_KEY) ||
-      '{"enabled":false,"webhookUrl":""}'
+      '{"enabled":false}'
     );
   } catch (error) {
     return {
-      enabled: false,
-      webhookUrl: ''
+      enabled: false
     };
   }
 }
@@ -17,7 +17,9 @@ function loadDiscordSettings() {
 function saveDiscordSettings(settings) {
   localStorage.setItem(
     DISCORD_SETTINGS_KEY,
-    JSON.stringify(settings)
+    JSON.stringify({
+      enabled: !!settings.enabled
+    })
   );
 }
 
@@ -28,24 +30,28 @@ async function sendDiscordWebhookMessage(message) {
     throw new Error('Discord alerts are disabled.');
   }
 
-  if (!settings.webhookUrl) {
-    throw new Error('Discord webhook URL is missing.');
-  }
-
-  const response = await fetch(settings.webhookUrl, {
+  const response = await fetch(DISCORD_SERVER_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      username: 'Black Market Advisor',
-      content: message
+      message
     })
   });
 
+  let responseBody = null;
+
+  try {
+    responseBody = await response.json();
+  } catch (error) {
+    // The server may return an empty or non-JSON response.
+  }
+
   if (!response.ok) {
     throw new Error(
-      `Discord returned ${response.status} ${response.statusText}`
+      responseBody?.error ||
+      `Discord alert server returned ${response.status} ${response.statusText}`
     );
   }
 
@@ -57,7 +63,7 @@ async function sendDiscordTestAlert() {
     [
       '✅ **Black Market Advisor connected**',
       '',
-      'Discord notifications are working.',
+      'Discord notifications are working through the local alert server.',
       `Test sent: ${new Date().toLocaleString()}`
     ].join('\n')
   );

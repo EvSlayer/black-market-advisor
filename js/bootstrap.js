@@ -60,10 +60,6 @@ function startMonitorCountdown(nextRefreshAt) {
   monitorCountdownTimer = setInterval(updateCountdown, 1000);
 }
 
-
-
-
-
 function startAutoMonitorReceiver() {
   window.addEventListener('message', (event) => {
     const payload = event.data;
@@ -114,8 +110,6 @@ function startAutoMonitorReceiver() {
     }
   });
 }
-
-
 
 let lastData=null, lastResult=null;
 document.getElementById('analyzeBtn').onclick=()=>{
@@ -169,9 +163,6 @@ if (clearHistoryButton) {
 const discordEnabledInput =
   document.getElementById('discordAlertsEnabled');
 
-const discordWebhookInput =
-  document.getElementById('discordWebhookUrl');
-
 const testDiscordButton =
   document.getElementById('testDiscordWebhookBtn');
 
@@ -184,23 +175,14 @@ if (discordEnabledInput) {
   discordEnabledInput.checked = !!savedDiscordSettings.enabled;
 }
 
-if (discordWebhookInput) {
-  discordWebhookInput.value = savedDiscordSettings.webhookUrl || '';
-}
-
 function persistDiscordSettings() {
   saveDiscordSettings({
-    enabled: !!discordEnabledInput?.checked,
-    webhookUrl: discordWebhookInput?.value.trim() || ''
+    enabled: !!discordEnabledInput?.checked
   });
 }
 
-discordEnabledInput?.addEventListener(
-  'change',
-  persistDiscordSettings
-);
 
-discordWebhookInput?.addEventListener(
+discordEnabledInput?.addEventListener(
   'change',
   persistDiscordSettings
 );

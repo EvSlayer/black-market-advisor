@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "id": "1784472705260",
+    "userId": "261947181181698050",
+    "username": "evilslayer",
+    "commodity": "uranium",
+    "condition": "above",
+    "price": 40000,
+    "createdAt": "2026-07-19T14:51:45.260Z"
+  }
+]

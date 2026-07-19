@@ -1,5 +1,6 @@
 const DISCORD_SETTINGS_KEY = 'bm_discord_settings_v2';
-const DISCORD_SERVER_URL = 'http://localhost:3000/send-alert';
+const DISCORD_SERVER_URL =
+  'https://disturbed-frequently-sim-tramadol.trycloudflare.com/send-alert';
 
 function loadDiscordSettings() {
   try {

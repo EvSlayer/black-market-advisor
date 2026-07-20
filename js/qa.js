@@ -50,9 +50,9 @@ function rankOfOption(result,key){
   const i=rows.findIndex(o=>o.key===key); return i<0?null:i+1;
 }
 function capAnswer(result){
-  const bad=(result?.portfolioPlan?.allocations||[]).filter(a=>a.key!=='__cash' && a.pct>.50001);
-  if(bad.length) return {title:'You found an allocation bug.',body:`The 50% limit is hard. ${bad.map(a=>`${a.name} is shown at ${Math.round(a.pct*100)}%`).join(', ')}. Anything above 50% should be reduced to 50%, with the remainder kept as cash or assigned to another qualifying commodity.`,evidence:'The optimizer should never allocate more than 50.0% to one commodity.'};
-  return {title:'The current plan respects the 50% cap.',body:'No commodity in the recommended allocation is above 50%. A displayed 34% should only be cash—the leftover created because three 50% positions total 99%.',evidence:'Commodity cap: 50%; cash is not a commodity and may hold the remaining 1% or more.'};
+  const bad=(result?.portfolioPlan?.allocations||[]).filter(a=>a.key!=='__cash' && a.pct>.33001);
+  if(bad.length) return {title:'You found an allocation bug.',body:`The 33% limit is hard. ${bad.map(a=>`${a.name} is shown at ${Math.round(a.pct*100)}%`).join(', ')}. Anything above 33% should be reduced to 33%, with the remainder kept as cash or assigned to another qualifying commodity.`,evidence:'The optimizer should never allocate more than 33.0% to one commodity.'};
+  return {title:'The current plan respects the 33% cap.',body:'No commodity in the recommended allocation is above 33%. A displayed 34% should only be cash—the leftover created because three 33% positions total 99%.',evidence:'Commodity cap: 33%; cash is not a commodity and may hold the remaining 1% or more.'};
 }
 function explainCommodity(o,result,q){
   const trend=recentTrend(o); const perc=pricePercentile(o); const rank=rankOfOption(result,o.key);
@@ -66,11 +66,11 @@ function explainCommodity(o,result,q){
   let title=`Assessment: ${o.name}`;
   let body='';
   if(worst){
-    body=`Past yield alone is not the reason to buy it. The advisor is evaluating the entry now: ${o.name} is ${entryLabel(o)}, ranks #${rank||'—'} by the current model, and has ${pct(upside)} upside to the estimated target. A historically weak commodity should only receive allocation after stronger qualifying opportunities reach the 50% cap—or if its current entry is unusually cheap.`;
+    body=`Past yield alone is not the reason to buy it. The advisor is evaluating the entry now: ${o.name} is ${entryLabel(o)}, ranks #${rank||'—'} by the current model, and has ${pct(upside)} upside to the estimated target. A historically weak commodity should only receive allocation after stronger qualifying opportunities reach the 33% cap—or if its current entry is unusually cheap.`;
   } else if(falling){
     body=`Your concern is valid. ${o.name} is ${trend.label} over the latest captured points (${pct(trend.pct)}), and the current price is around the ${Math.round(perc*100)}th percentile of saved history. ${entryLabel(o)}. The advisor should not buy merely because the target is high; the entry threshold, event signal, and trade cost must still justify it.${whyBuy && !o.inManualBuyZone?' At this price I would treat it as a watch, not an automatic buy.':''}`;
   } else {
-    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to 50% per commodity and must pass the trade-cost test.`:''}`;
+    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to 33% per commodity and must pass the trade-cost test.`:''}`;
   }
   const evidence=`Current ${fmt(o.price)} · Buy threshold ${fmt(o.buyThreshold)} · Sell threshold ${fmt(o.sellThreshold)} · Historical percentile ${Math.round(perc*100)}th · Recent trend ${trend.label} ${pct(trend.pct)}.${eventText}`;
   return {title,body,evidence};
@@ -171,10 +171,232 @@ function eventDirectionQuestionAnswer(q,entities,result,data){
   };
 }
 
+
+function advisorHistoryPointCount(data){
+  return Math.max(
+    0,
+    ...(data?.commodities||[]).map(c=>
+      (c.history||[]).filter(v=>Number.isFinite(Number(v)) && Number(v)>0).length
+    )
+  );
+}
+
+function advisorKnowledgeAnswer(q,data,result){
+  const pointCount=advisorHistoryPointCount(data);
+  const updateMinutes=15;
+  const representedMinutes=pointCount>1 ? (pointCount-1)*updateMinutes : 0;
+  const representedHours=representedMinutes/60;
+  const historyText=pointCount
+    ? `${pointCount} visible price points, covering about ${representedHours.toFixed(representedHours%1?1:0)} hours from the first point to the latest point when updates arrive every 15 minutes`
+    : `the visible price points supplied by the latest market capture`;
+
+  if(/sparkline|price graph|history graph|little graph|mini graph/.test(q)){
+    return {
+      title:'Commodity sparkline',
+      body:`The sparkline uses ${historyText}. It is a rolling in-game view, not the advisor’s complete saved history. Older captured prices can remain available through saved price memory and Move Records after they disappear from the sparkline.`,
+      evidence:pointCount
+        ? `Current capture: ${pointCount} points × 15-minute updates; first-to-last span is approximately ${representedHours.toFixed(2)} hours.`
+        : 'The exact span is calculated from the number of history points in the current capture.'
+    };
+  }
+
+  if(/market snapshot|snapshot at the bottom|snapshot section|market table/.test(q)){
+    return {
+      title:'Market Snapshot',
+      body:'The Market Snapshot is primarily a current-state table from the latest capture. It shows each commodity’s current price and the recent rolling history supplied by the game. It is not itself a full 24-hour archive or a record of every price the advisor has ever seen.',
+      evidence:`The latest snapshot can include ${pointCount||'the currently available'} rolling history points; longer-term captured history is stored separately.`
+    };
+  }
+
+  if(/move records?|largest move|record rise|record fall/.test(q) && !/(what|which).*(largest|biggest)/.test(q)){
+    return {
+      title:'Move Records',
+      body:'Move Records preserve the largest observed rise and fall between consecutive saved market captures. They are built from persistent saved price memory, so they can outlive the shorter rolling sparkline.',
+      evidence:'Move Records describe observed past intervals; they do not predict the next update.'
+    };
+  }
+
+  if(/automatic monitoring|monitoring section|capture source|last market scan|next scan|connection status/.test(q)){
+    return {
+      title:'Automatic Monitoring',
+      body:'Automatic Monitoring reports whether the capture script is connected, when the last market scan arrived, where it came from, and when another scan is expected. The game tab and advisor tab generally need to remain open for automatic captures.',
+      evidence:'This section reports capture status; it does not make trading decisions.'
+    };
+  }
+
+  if(/paste page html|html input|manual capture|analyze market button/.test(q)){
+    return {
+      title:'Paste page HTML',
+      body:'This is the manual fallback for loading market data. Paste the Black Market page HTML and choose Analyze Market. Automatic Monitoring normally fills this data for you when the capture script is connected.',
+      evidence:'Manual paste and automatic capture feed the same analysis pipeline.'
+    };
+  }
+
+  if(/developer mode|developer diagnostics|parsed json|debug/.test(q)){
+    return {
+      title:'Developer Mode',
+      body:'Developer Mode reveals diagnostic details used to inspect how the advisor reached a result, including intermediate values and parsed data. It is intended for troubleshooting and does not change the market itself.',
+      evidence:'Turning diagnostics on should explain the calculation; it should not independently alter the recommendation.'
+    };
+  }
+
+  if(/recommended portfolio|portfolio plan|allocation section/.test(q)){
+    return {
+      title:'Recommended Portfolio',
+      body:'Recommended Portfolio shows the advisor’s preferred capped allocation after considering clean entry zones, current holdings, cash, trade cost, limited trades, event evidence, and opportunity cost. A theoretical candidate can still be rejected when the expected improvement is too small.',
+      evidence:'The active interface limits a single commodity to 50% of the portfolio.'
+    };
+  }
+
+  if(/50%|50 percent|fifty percent|portfolio cap|maximum per commodity/.test(q)){
+    return {
+      title:'50% portfolio cap',
+      body:'The advisor allows no more than 50% of the portfolio in one commodity. The rule reduces single-commodity risk while still allowing a strong position. Any remainder can be spread among other qualifying commodities or held as cash.',
+      evidence:'Current portfolio rule: 50% maximum per commodity.'
+    };
+  }
+
+  if(/waiting for|waiting section|what am i waiting/.test(q)){
+    return {
+      title:'Waiting For…',
+      body:'Waiting For… lists the market conditions that would make the current decision more attractive or change it—for example, a commodity reaching its buy threshold, a stronger event signal, a better alternative, or enough expected improvement to justify another trade.',
+      evidence:'It is a watch list of decision triggers, not a guarantee that they will occur.'
+    };
+  }
+
+  if(/current position|position box|my holdings section/.test(q)){
+    return {
+      title:'Current Position',
+      body:'Current Position summarizes what you presently own, your cash, and how that mix compares with the advisor’s current assessment. It describes the starting point before any recommended trades.',
+      evidence:'This section reflects the latest captured portfolio values.'
+    };
+  }
+
+  if(/pros.*cons|pros and cons|why not list|counterargument/.test(q)){
+    return {
+      title:'Pros & Cons',
+      body:'Pros & Cons separates evidence supporting the recommendation from risks and counterarguments. It is there to prevent a single score or attractive target from hiding uncertainty, trade cost, event risk, or a weak entry.',
+      evidence:'The recommendation should be read together with both columns.'
+    };
+  }
+
+  if(/top alternatives|alternatives table|other options/.test(q)){
+    return {
+      title:'Top Alternatives',
+      body:'Top Alternatives ranks other commodities or allocations that were considered. It helps show whether the recommendation is clearly better than the next-best choice or only narrowly ahead.',
+      evidence:'A high-ranked alternative is not automatically actionable unless it also clears entry and trade-cost requirements.'
+    };
+  }
+
+  if(/position switch|switch outlook|switching position|hold versus switch/.test(q)){
+    return {
+      title:'Position Switch Outlook',
+      body:'Position Switch Outlook compares keeping one current holding with selling it and moving that value into another commodity. It accounts for the expected difference, trade usage, current entry quality, and whether the switch is large enough to justify acting.',
+      evidence:'A better theoretical destination can still be rejected when the gain is too small relative to the trades.'
+    };
+  }
+
+  if(/confidence|data confidence|decision confidence|historical confidence|classification confidence/.test(q)){
+    return {
+      title:'Confidence',
+      body:'Confidence describes how much evidence supports a conclusion. Data confidence reflects the amount and quality of captured history; historical event confidence reflects repeated outcomes and consistency; classification confidence reflects how strongly an event name matches a known event type. Confidence is not the probability of profit.',
+      evidence:'More independent, directionally consistent observations generally increase confidence.'
+    };
+  }
+
+  if(/buy threshold|buy zone|sell threshold|sell zone|sell review/.test(q)){
+    return {
+      title:'Buy and sell thresholds',
+      body:'A buy threshold is the highest price the advisor considers a clean entry under the current assumptions. A sell threshold marks the area where taking profit or reviewing the position becomes reasonable. Events and saved history can adjust how cautiously those thresholds are interpreted.',
+      evidence:'Crossing a threshold is an input to the decision, not an automatic order.'
+    };
+  }
+
+  if(/saved price memory|price memory|long.?term history|older history|how far back.*history/.test(q)){
+    return {
+      title:'Saved price memory',
+      body:'Saved price memory stores captured prices beyond the game’s rolling sparkline. It supports longer-term percentiles, trend context, and Move Records. It only knows captures the advisor actually received.',
+      evidence:'Missing scans create gaps; the advisor does not invent prices for those intervals.'
+    };
+  }
+
+  if(/notifications?|discord alerts?|test alert/.test(q)){
+    return {
+      title:'Notifications',
+      body:'Notifications control Discord alerts from the advisor. The test button verifies that the alert path works. Enabling alerts does not change the recommendation; it only changes whether qualifying messages are sent.',
+      evidence:'Alert delivery depends on the configured webhook and running alert service.'
+    };
+  }
+
+  if(/ask the advisor|help mode|what can (you|the advisor) answer|how do i use.*advisor/.test(q)){
+    return {
+      title:'Ask the Advisor help',
+      body:'You can ask about how any page section works, current commodities, two-way comparisons, active events, buy or sell thresholds, cash, trade cost, portfolio allocations, saved history, confidence, or whether holding versus switching is worthwhile. Examples: “Explain Move Records,” “What does Supply glut do?”, “How long is the sparkline?”, or “Why hold cash?”',
+      evidence:'Help questions are answered from the advisor’s built-in knowledge; market questions use the latest analyzed snapshot.'
+    };
+  }
+
+  return null;
+}
+
+function specificEventKnowledgeAnswer(q,result,data){
+  const rawEvents=result?.eventMemory?.rawEvents||[];
+  if(!rawEvents.length) return null;
+
+  const event=matchActiveEventFromQuestion(q,result,data);
+  if(!event) return null;
+
+  const eventWords=normalizeQuestion(event.name)
+    .split(/\s+/)
+    .filter(w=>w.length>=4 && !['event','ago','hits','street','streets','affected'].includes(w));
+
+  const explicitMatch=eventWords.filter(w=>q.includes(w)).length>=1;
+  const asksWhat=/what does|what is|explain|tell me about|meaning|effect|do\??$/.test(q);
+
+  if(!explicitMatch || !asksWhat) return null;
+
+  const activeProfile=result?.eventMemory?.active?.[event.name]||
+    result?.eventMemory?.profiles?.[event.name]||
+    null;
+
+  const eventType=activeProfile?.eventType||event.eventType||'Unknown';
+  const expected=activeProfile?.expectedDirection||event.expectedDirection||null;
+  const targetKey=eventTargetKey(event.name);
+  const targetName=targetKey ? nameFor(targetKey) : null;
+  const occurrenceCount=activeProfile?.occurrences||0;
+  const classificationConfidence=
+    activeProfile?.classificationConfidence ?? event.classificationConfidence ?? 0;
+
+  const directionText=
+    expected==='up' || String(expected).toLowerCase()==='bullish'
+      ? 'upward pressure'
+      : expected==='down' || String(expected).toLowerCase()==='bearish'
+        ? 'downward pressure'
+        : 'no fixed direction yet';
+
+  const targetText=targetName
+    ? ` It is specifically associated with ${targetName}.`
+    : ' No single target commodity was identified from the event text.';
+
+  return {
+    title:event.name,
+    body:`The advisor classifies this as <strong>${eventType}</strong>. Its rule-based expectation is <strong>${directionText}</strong>.${targetText} That expectation remains separate from measured history: the advisor will rely more heavily on the actual repeated price response as additional independent occurrences are captured.`,
+    evidence:`Displayed age: ${event.ageMinutes||0} minutes · Tracked occurrences: ${occurrenceCount} · Classification confidence: ${Math.round(classificationConfidence*100)}%.`
+  };
+}
+
 function askAdvisor(question){
-  if(!lastData || !lastResult) return {title:'Analyze the market first.',body:'Load a current Black Market snapshot before asking a data-based question.',evidence:''};
   const q=normalizeQuestion(question);
-  if(!q) return {title:'Ask me something about the current assessment.',body:'For example: “Why Pills?”, “Could Art drop more?”, or “Is this worth the trades?”',evidence:''};
+  if(!q) return {title:'Ask me something about the advisor or current assessment.',body:'For example: “How long is the sparkline?”, “Explain Move Records,” “Why Pills?”, or “Is this worth the trades?”',evidence:''};
+
+  const knowledgeAnswer=advisorKnowledgeAnswer(q,lastData,lastResult);
+  if(knowledgeAnswer) return knowledgeAnswer;
+
+  if(!lastData || !lastResult) return {title:'Analyze the market first.',body:'That question needs a current Black Market snapshot. General help questions about the advisor can be answered without one.',evidence:''};
+
+  const specificEventAnswer=specificEventKnowledgeAnswer(q,lastResult,lastData);
+  if(specificEventAnswer) return specificEventAnswer;
+
   let entities=findQuestionEntities(q);
   if(!entities.length && advisorLastEntity) entities=[{key:advisorLastEntity,name:nameFor(advisorLastEntity)}];
   if(entities.length) advisorLastEntity=entities[0].key;
@@ -182,7 +404,7 @@ function askAdvisor(question){
     const moveAns=moveRecordAnswer(q,entities,lastData);
     if(moveAns) return moveAns;
   }
-  if(/50%|50 percent|thirty three|over the cap|max is 50|maximum.*50/.test(q)) return capAnswer(lastResult);
+  if(/33%|33 percent|thirty three|over the cap|max is 33|maximum.*33/.test(q)) return capAnswer(lastResult);
   if(/worth.*trade|trade.*worth|too many trade|trades left|opportunity cost|wasting.*trade/.test(q)){
     const p=lastResult.portfolioPlan;
     const candidateTrades=p.candidateTrades||p.trades||[];
@@ -218,9 +440,9 @@ function askAdvisor(question){
     const decisionText=isActionable
       ? `The recommended capped mix projects ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}).`
       : `The optimizer tested a capped candidate mix projecting ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}). Because that candidate did not justify the trades, it was rejected; the actionable recommendation is ${lastResult.action} with zero immediate trades.`;
-    return {title:`Why the advisor says “${lastResult.action}”`,body:`The decision is built from qualifying buy zones, the 50% cap, current holdings, realized-loss protection, active event evidence, and limited trades. ${decisionText}`,evidence:`Confidence in ${lastResult.action}: ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
+    return {title:`Why the advisor says “${lastResult.action}”`,body:`The decision is built from qualifying buy zones, the 33% cap, current holdings, realized-loss protection, active event evidence, and limited trades. ${decisionText}`,evidence:`Confidence in ${lastResult.action}: ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
   }
-  return {title:'Here is what the data can answer.',body:'I could not confidently identify the exact intent, but you can ask about a commodity by nickname, compare two commodities, challenge the 50% allocation, ask whether a switch is worth the trades, question a falling trend, or ask why cash is being held. Try naming the commodity or the specific concern.',evidence:'Examples: “Why pills?”, “Art vs Uranium?”, “Is this worth two trades?”, “Why not cash?”, “Uranium is falling—still buy?”'};
+  return {title:'Here is what the data can answer.',body:'I could not confidently identify the exact intent, but you can ask about a commodity by nickname, compare two commodities, challenge the 33% allocation, ask whether a switch is worth the trades, question a falling trend, or ask why cash is being held. Try naming the commodity or the specific concern.',evidence:'Examples: “Why pills?”, “Art vs Uranium?”, “Is this worth two trades?”, “Why not cash?”, “Uranium is falling—still buy?”'};
 }
 function renderMoveRecords(data){
   const table=document.getElementById('moveRecordsTable');

@@ -635,22 +635,126 @@ a.key === '__cash'
   const dustNote = result.ignoredDust?.length ? `<tr><th>Minor holdings (&lt;${Math.round(result.majorThresholdPct*100)}%)</th><td class="num">${result.ignoredDust.map(h=>`${h.name}: ${fmt(h.value)} (${pct(result.currentValue?h.value/result.currentValue:0)})`).join('<br>')}</td></tr>` : '';
   document.getElementById('positionBox').innerHTML = `<table><tr><th>Portfolio</th><td class="num">${fmt(result.currentValue)}</td></tr><tr><th>Cash</th><td class="num">${fmt(data.cash)}</td></tr>${majorRows}${dustNote}<tr><th>Trades left</th><td class="num">${data.tradesRemaining ?? 'Unknown'}</td></tr><tr><th>Week ends in</th><td class="num">${data.timeRemaining || 'Unknown'}</td></tr></table>`;
   document.getElementById('eventsBox').innerHTML = data.events.length ? `<ul>${data.events.map(e=>{
-    const n=normalizeEventName(e); const p=result.eventMemory?.profiles?.[n];
-    const occurrenceCount=p?.occurrences||1;
-    const rows=[];
-    for(const [key,label] of COMMODITIES){
-      let stat=null,window=null;
-      for(const w of [360,180,720,60,1440]){ const x=p?.summary?.[w]?.[key]; if(x&&x.n>=1){stat=x;window=w;break;} }
-      if(!stat) continue;
-      const direction=Math.abs(stat.avg)<0.0005?'neutral':(stat.avg>0?'bullish':'bearish');
-      const conf=stat.n>=5&&stat.consistency>=.75?'High':stat.n>=3&&stat.consistency>=.67?'Medium':'Low';
-      const moveText=direction==='neutral'?'flat':`${direction==='bullish'?'up':'down'} ${(Math.abs(stat.avg)*100).toFixed(1)}%`;
-      rows.push(`${label}: ${direction} — ${moveText} over ${window>=60?Math.round(window/60)+'h':window+'m'} (${stat.n} occurrence${stat.n===1?'':'s'}, ${conf.toLowerCase()} confidence)`);
+    
+    const n = normalizeEventName(e);
+    const p = result.eventMemory?.profiles?.[n];
+
+const activeEvent =
+  result.eventMemory?.active?.[n] ||
+  result.eventMemory?.profiles?.[n] ||
+  null;
+
+const classification = {
+  type:
+    activeEvent?.eventType ||
+    p?.eventType ||
+    'Unknown',
+
+  expectedDirection:
+    activeEvent?.expectedDirection ||
+    p?.expectedDirection ||
+    'Unknown',
+
+  classificationConfidence:
+    activeEvent?.classificationConfidence ??
+    p?.classificationConfidence ??
+    0
+};
+
+const typeProfile =
+  result.eventMemory?.typeProfiles?.[classification.type];
+
+   
+    const occurrenceCount = p?.occurrences || 1;
+    const rows = [];
+
+    for (const [key, label] of COMMODITIES) {
+      let stat = null;
+      let window = null;
+
+      for (const w of [360, 180, 720, 60, 1440]) {
+        const exactStat = p?.summary?.[w]?.[key];
+        const typeStat = typeProfile?.summary?.[w]?.[key];
+        const candidate = exactStat || typeStat;
+
+        if (candidate && candidate.n >= 1) {
+          stat = candidate;
+          window = w;
+          break;
+        }
+      }
+
+      if (!stat) continue;
+
+      const direction =
+        Math.abs(stat.avg) < 0.0005
+          ? 'neutral'
+          : stat.avg > 0
+            ? 'bullish'
+            : 'bearish';
+
+      const confidence =
+        stat.n >= 5 && stat.consistency >= 0.75
+          ? 'High'
+          : stat.n >= 3 && stat.consistency >= 0.67
+            ? 'Medium'
+            : 'Low';
+
+      const moveText =
+        direction === 'neutral'
+          ? 'flat'
+          : `${direction === 'bullish' ? 'up' : 'down'} ${(Math.abs(stat.avg) * 100).toFixed(1)}%`;
+
+      const sampleFactor = Math.min(1, stat.n / 5);
+      const strength = Math.abs(stat.avg) * (stat.consistency || 0) * sampleFactor;
+
+      rows.push({
+        label,
+        direction,
+        moveText,
+        window,
+        observations: stat.n,
+        consistency: stat.consistency || 0,
+        confidence,
+        strength
+      });
     }
-    const historyText=rows.length?rows.slice(0,4).join('<br>'):'Not enough completed event history yet. The advisor is recording prices at 15m, 1h, 3h, 6h, 12h, and 24h.';
-    const overlapNote = data.events.length > 1 ? '<br><em>Overlapping active events mean this movement cannot yet be attributed to this event alone.</em>' : '';
-    return `<li><strong>${e}</strong><br><span class="mini">Tracked occurrence count: ${occurrenceCount}.<br>${historyText}${overlapNote}</span></li>`;
-  }).join('')}</ul><div class="mini" style="margin-top:10px">Event effects only adjust scores and buy/sell thresholds after repeated, consistent observations. Unknown events reduce certainty rather than forcing a direction.</div>` : '<div class="mini">No events detected.</div>';
+
+    rows.sort((a, b) => b.strength - a.strength);
+
+    let historyText;
+
+    if (rows.length) {
+      historyText = rows
+        .slice(0, 3)
+        .map((row, index) => {
+          const medal = ['🥇', '🥈', '🥉'][index];
+          const windowText = row.window >= 60
+            ? `${Math.round(row.window / 60)}h`
+            : `${row.window}m`;
+
+          return `${medal} <strong>${row.label}</strong>: ${row.direction} — ${row.moveText} over ${windowText}<br><span class="mini">${row.observations} observation${row.observations === 1 ? '' : 's'} · ${Math.round(row.consistency * 100)}% consistency · strength ${Math.round(row.strength * 1000)}</span>`;
+        })
+        .join('<br><br>');
+    } else if (typeProfile) {
+      historyText =
+        `Classified as <strong>${classification.type}</strong><br>` +
+        `Expected direction: <strong>${classification.expectedDirection}</strong><br>` +
+        `Based on ${typeProfile.occurrences || 0} similar historical event${typeProfile.occurrences === 1 ? '' : 's'}.`;
+    } else {
+      historyText =
+        `Classified as <strong>${classification.type}</strong><br>` +
+        `Expected direction: <strong>${classification.expectedDirection}</strong><br>` +
+        `No historical examples of this event type yet.<br>` +
+        `Classification confidence: ${Math.round((classification.classificationConfidence || 0) * 100)}%.`;
+    }
+
+    const overlapNote = data.events.length > 1
+      ? '<br><em>Overlapping active events mean this movement cannot yet be attributed to this event alone.</em>'
+      : '';
+
+    return `<li><strong>${e}</strong><br><span class="mini">Tracked occurrence count: ${occurrenceCount}.<br>Event type: <strong>${classification.type}</strong><br>Expected direction: <strong>${classification.expectedDirection}</strong><br><br>${historyText}${overlapNote}</span></li>`;
+  }).join('')}</ul><div class="mini" style="margin-top:10px">Event effects only adjust scores and buy/sell thresholds after repeated, consistent observations. Rankings use movement size, consistency, and sample size.</div>` : '<div class="mini">No events detected.</div>';
   const waiting=[];
   const currentExpected = result.currentOpt?.expectedValue || result.currentValue;
   const required = currentExpected * (1 + result.params.minImprovePct);
@@ -694,7 +798,42 @@ a.key === '__cash'
     const targetCell = o.type==='cash' ? '—' : (o.type==='split' ? fmt(o.legA.target)+' / '+fmt(o.legB.target) : fmt(o.target));
     return `<tr class="${i===0?'rank1':''}"><td>${i+1}</td><td>${label}</td><td class="num">${currentCell}</td><td class="num">${targetCell}</td><td class="num">${fmt(o.expectedValue)}</td><td class="num ${o.extraVsNow>=0?'good':'bad'}">${fmt(o.extraVsNow)}</td><td class="num ${vsHoldClass}">${vsHoldText}</td><td class="num">${o.tradesNeeded}</td><td class="num">${Math.round(o.score)}</td></tr>`
   }).join('');
-  document.getElementById('marketTable').innerHTML = `<tr><th>Commodity</th><th class="num">Current</th><th class="num">Buy Threshold</th><th>Entry Status</th><th class="num">Sell Threshold</th><th>Exit Status</th><th>Event Signal</th><th>Price Rarity</th><th class="num">Hist Low</th><th class="num">Hist Median</th><th class="num">Hist High</th><th class="num">Est Target</th><th class="num">Upside Left</th></tr>` + data.commodities.map(c=>{ const hist=c.history||[]; const o=result.options.find(x=>x.key===c.key); const inZone=!!o?.inManualBuyZone; const nearZone=!inZone && isValidMoney(o?.buyThreshold) && c.price <= o.buyThreshold*1.15; const status=inZone?'BUY ZONE':nearZone?'WATCH':'TOO HIGH'; const statusClass=inZone?'good':nearZone?'warn':'bad'; const sellReached=!!o?.inSellZone; const nearSell=!sellReached && isValidMoney(o?.sellThreshold) && c.price >= o.sellThreshold*0.92; const exitStatus=sellReached?'SELL ZONE':nearSell?'SELL REVIEW':'HOLD ZONE'; const exitClass=sellReached?'good':nearSell?'warn':''; const sorted=[...hist,c.price].sort((a,b)=>a-b); const percentile=sorted.length?sorted.filter(x=>x<=c.price).length/sorted.length:.5; const rarity=percentile<=.10?'Very Low':percentile<=.25?'Low':percentile>=.90?'Very High':percentile>=.75?'High':'Typical'; const es=o?.eventSignal; const eventText=es&&es.confidence>=.45?`${es.effect>=0?'Bullish':'Bearish'} ${pct(Math.abs(es.effect))}<br><span class="mini">${Math.round(es.confidence*100)}% evidence confidence</span>`:(data.events.length?'Learning':'None'); const eventClass=es&&es.confidence>=.45?(es.effect>=0?'good':'bad'):''; return `<tr><td>${c.name}</td><td class="num">${fmt(c.price)}</td><td class="num">${fmt(o?.buyThreshold)}</td><td class="${statusClass}"><strong>${status}</strong></td><td class="num">${fmt(o?.sellThreshold)}</td><td class="${exitClass}"><strong>${exitStatus}</strong></td><td class="${eventClass}"><strong>${eventText}</strong></td><td><strong>${rarity}</strong> (${Math.round(percentile*100)}th pct)</td><td class="num">${fmt(Math.min(...hist,c.price))}</td><td class="num">${fmt(quantile(hist,.5)||c.price)}</td><td class="num">${fmt(Math.max(...hist,c.price))}</td><td class="num">${fmt(o?.target)}</td><td class="num ${o?.upsidePct>=0?'good':'bad'}">${pct(o?.upsidePct||0)}</td></tr>`; }).join('');
+  document.getElementById('marketTable').innerHTML = `<tr><th>Commodity</th><th class="num">Current</th><th class="num">Buy Threshold</th><th>Entry Status</th><th class="num">Sell Threshold</th><th>Exit Status</th><th>Event Signal</th><th>Price Rarity</th><th class="num">Hist Low</th><th class="num">Hist Median</th><th class="num">Hist High</th><th class="num">Est Target</th><th class="num">Upside Left</th></tr>` + data.commodities.map(c=>{ const hist=c.history||[]; const o=result.options.find(x=>x.key===c.key); const inZone=!!o?.inManualBuyZone; const nearZone=!inZone && isValidMoney(o?.buyThreshold) && c.price <= o.buyThreshold*1.15; const status=inZone?'BUY ZONE':nearZone?'WATCH':'TOO HIGH'; const statusClass=inZone?'good':nearZone?'warn':'bad'; const sellReached=!!o?.inSellZone; const nearSell=!sellReached && isValidMoney(o?.sellThreshold) && c.price >= o.sellThreshold*0.92; const exitStatus=sellReached?'SELL ZONE':nearSell?'SELL REVIEW':'HOLD ZONE'; const exitClass=sellReached?'good':nearSell?'warn':''; const sorted=[...hist,c.price].sort((a,b)=>a-b); const percentile=sorted.length?sorted.filter(x=>x<=c.price).length/sorted.length:.5; const rarity=percentile<=.10?'Very Low':percentile<=.25?'Low':percentile>=.90?'Very High':percentile>=.75?'High':'Typical'; const es=o?.eventSignal; 
+    const eventText = (() => {
+    if (!es) {
+        return data.events.length ? 'Learning' : 'None';
+    }
+
+    const direction =
+        Math.abs(es.effect) < 0.0005
+            ? 'Neutral'
+            : (es.effect > 0 ? 'Bullish' : 'Bearish');
+
+    const move =
+        Math.abs(es.effect) < 0.0005
+            ? ''
+            : ` ${pct(Math.abs(es.effect))}`;
+
+    const sourceLabel =
+        es.source === 'exact'
+            ? 'Exact history'
+            : es.source === 'type'
+                ? 'Event type'
+                : 'Classification';
+
+    return `
+        <strong>${direction}${move}</strong>
+        <br><span class="mini">
+            ${sourceLabel}
+            <br>
+            ${Math.round((es.historicalConfidence || 0) * 100)}% historical
+            <br>
+            ${Math.round((es.classificationConfidence || 0) * 100)}% classification
+            <br>
+            ${Math.round((es.confidence || 0) * 100)}% combined
+        </span>
+    `;
+})(); const eventClass=es&&es.confidence>=.45?(es.effect>=0?'good':'bad'):''; return `<tr><td>${c.name}</td><td class="num">${fmt(c.price)}</td><td class="num">${fmt(o?.buyThreshold)}</td><td class="${statusClass}"><strong>${status}</strong></td><td class="num">${fmt(o?.sellThreshold)}</td><td class="${exitClass}"><strong>${exitStatus}</strong></td><td class="${eventClass}"><strong>${eventText}</strong></td><td><strong>${rarity}</strong> (${Math.round(percentile*100)}th pct)</td><td class="num">${fmt(Math.min(...hist,c.price))}</td><td class="num">${fmt(quantile(hist,.5)||c.price)}</td><td class="num">${fmt(Math.max(...hist,c.price))}</td><td class="num">${fmt(o?.target)}</td><td class="num ${o?.upsidePct>=0?'good':'bad'}">${pct(o?.upsidePct||0)}</td></tr>`; }).join('');
   document.getElementById('debug').textContent = JSON.stringify({data,result},null,2);
 
 renderRecommendationExplanation(result);
@@ -704,5 +843,3 @@ renderRecommendationHistory();
 renderPositionSwitchOutlook(data, result);
 
 }
-
-

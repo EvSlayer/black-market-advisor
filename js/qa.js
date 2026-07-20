@@ -192,25 +192,77 @@ function commodityFromData(data,key){
   return (data?.commodities||[]).find(c=>c.key===key) || null;
 }
 
+function marketMemoryEntry(key){
+  try{
+    if(typeof loadMarketMemory==='function'){
+      return loadMarketMemory()?.commodities?.[key] || null;
+    }
+    const mem=JSON.parse(localStorage.getItem('bm_market_memory_v1')||'{"commodities":{}}');
+    return mem?.commodities?.[key] || null;
+  }catch(e){
+    return null;
+  }
+}
+
 function commodityPriceSeries(data,result,key){
   const c=commodityFromData(data,key);
   const o=optionForKey(result,key);
+  const memoryEntry=marketMemoryEntry(key);
 
-  // Prefer the longest history available. The current price is appended only
-  // when it is not already the final point.
-  const candidates=[
+  // Lifetime questions should prefer persistent advisor memory. The rolling
+  // sparkline is used only as a fallback when no saved memory exists.
+  const memoryPrices=validPriceSeries(memoryEntry?.prices);
+  const fallbackCandidates=[
+    validPriceSeries(c?.memoryHistory),
     validPriceSeries(c?.history),
     validPriceSeries(o?.history)
   ].sort((a,b)=>b.length-a.length);
 
-  const series=[...(candidates[0]||[])];
-  const current=Number(c?.price ?? o?.price ?? 0);
+  const series=[...(memoryPrices.length ? memoryPrices : (fallbackCandidates[0]||[]))];
+  const current=Number(c?.price ?? o?.price ?? memoryEntry?.lastPrice ?? 0);
   if(Number.isFinite(current) && current>0 && series[series.length-1]!==current){
     series.push(current);
   }
   return series;
 }
 
+function savedHistoryMetadata(key,points){
+  const entry=marketMemoryEntry(key);
+  let firstAt=entry?.firstCapturedAt || null;
+  let lastAt=entry?.lastCapturedAt || null;
+
+  // Best-effort migration for memory created before date boundaries existed.
+  if((!firstAt || !lastAt) && typeof loadMarketMemory==='function'){
+    const captures=loadMarketMemory()?.captures||[];
+    if(!firstAt) firstAt=captures[0]?.capturedAt||null;
+    if(!lastAt) lastAt=captures[captures.length-1]?.capturedAt||null;
+  }
+
+  const firstMs=Date.parse(firstAt||'');
+  const lastMs=Date.parse(lastAt||'');
+  const days=Number.isFinite(firstMs)&&Number.isFinite(lastMs)&&lastMs>=firstMs
+    ? (lastMs-firstMs)/86400000
+    : null;
+
+  return {
+    firstAt,
+    lastAt,
+    days,
+    points,
+    captures:Number(entry?.captures||0),
+    source:entry?.prices?.length ? 'persistent saved market history' : 'current available history'
+  };
+}
+
+function savedHistoryDurationText(meta){
+  if(Number.isFinite(meta?.days)){
+    if(meta.days>=2) return `Recorded from ${Math.max(1,Math.round(meta.days))} days of saved market history`;
+    if(meta.days>=1) return `Recorded from about ${meta.days.toFixed(1)} days of saved market history`;
+    const hours=Math.max(0,meta.days*24);
+    if(hours>=1) return `Recorded from about ${hours.toFixed(hours>=10?0:1)} hours of saved market history`;
+  }
+  return `Based on ${meta?.points||0} saved price points`;
+}
 function quantileSorted(sorted,p){
   if(!sorted.length) return null;
   const pos=(sorted.length-1)*Math.max(0,Math.min(1,p));
@@ -232,9 +284,10 @@ function historicalStatsFor(data,result,key){
   const percentile=sorted.filter(v=>v<=current).length/sorted.length;
   const highIndex=series.lastIndexOf(high);
   const lowIndex=series.lastIndexOf(low);
+  const memoryMeta=savedHistoryMetadata(key,series.length);
   return {
     series,sorted,current,high,low,average,median,percentile,
-    points:series.length,highIndex,lowIndex,
+    points:series.length,highIndex,lowIndex,memoryMeta,
     currentVsHigh:high?current/high:0,
     currentVsLow:low?current/low-1:0
   };
@@ -285,7 +338,7 @@ function historicalPriceAnswer(q,entities,data,result){
       body:asksCount
         ? `${entity.name} appears ${matches} time${matches===1?'':'s'} ${relation} ${fmt(threshold)} in the captured price points available to this advisor.`
         : `${matches>0?'Yes':'No'}—the advisor ${matches>0?'has':'has not'} recorded ${entity.name} ${relation} ${fmt(threshold)} in its available history.${matches>0?` It occurred in ${matches} captured point${matches===1?'':'s'}.`:''}`,
-      evidence:`${stats.points} captured price points · Recorded range ${fmt(stats.low)}–${fmt(stats.high)}. Captures are observations, not guaranteed evenly spaced intervals.`
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Recorded range ${fmt(stats.low)}–${fmt(stats.high)}. Missing scans remain gaps.`
     };
   }
 
@@ -293,7 +346,7 @@ function historicalPriceAnswer(q,entities,data,result){
     return {
       title:`Highest recorded price: ${entity.name}`,
       body:`The highest price available to this advisor is <strong>${fmt(stats.high)}</strong>. The current price is ${fmt(stats.current)}, which is ${currentPctOfHigh.toFixed(1)}% of that recorded high.`,
-      evidence:`Based on ${stats.points} captured price points · Recorded low ${fmt(stats.low)} · Average ${fmt(stats.average)}. “Recorded high” means the highest price the advisor has seen, not a guaranteed game-wide maximum.`
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Recorded low ${fmt(stats.low)} · Average ${fmt(stats.average)}. “Recorded high” means the highest price this advisor has saved, not a guaranteed game-wide maximum.`
     };
   }
 
@@ -301,7 +354,7 @@ function historicalPriceAnswer(q,entities,data,result){
     return {
       title:`Lowest recorded price: ${entity.name}`,
       body:`The lowest price available to this advisor is <strong>${fmt(stats.low)}</strong>. The current price is ${fmt(stats.current)}, or ${pct(stats.currentVsLow)} above that recorded low.`,
-      evidence:`Based on ${stats.points} captured price points · Recorded high ${fmt(stats.high)} · Median ${fmt(stats.median)}.`
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Recorded high ${fmt(stats.high)} · Median ${fmt(stats.median)}.`
     };
   }
 
@@ -309,7 +362,7 @@ function historicalPriceAnswer(q,entities,data,result){
     return {
       title:`Average recorded price: ${entity.name}`,
       body:`The arithmetic average of the available captured prices is <strong>${fmt(stats.average)}</strong>. The current price is ${fmt(stats.current)}, ${stats.current>=stats.average?pct(stats.current/stats.average-1)+' above':pct(1-stats.current/stats.average)+' below'} that average.`,
-      evidence:`${stats.points} captured price points · Median ${fmt(stats.median)} · Range ${fmt(stats.low)}–${fmt(stats.high)}.`
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Median ${fmt(stats.median)} · Range ${fmt(stats.low)}–${fmt(stats.high)}.`
     };
   }
 
@@ -317,7 +370,7 @@ function historicalPriceAnswer(q,entities,data,result){
     return {
       title:`Median recorded price: ${entity.name}`,
       body:`The median captured price is <strong>${fmt(stats.median)}</strong>. Half of the available observations are at or below it and half are at or above it.`,
-      evidence:`Current ${fmt(stats.current)} · Average ${fmt(stats.average)} · ${stats.points} captured price points.`
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Current ${fmt(stats.current)} · Average ${fmt(stats.average)} · ${stats.points} saved price points.`
     };
   }
 
@@ -325,7 +378,7 @@ function historicalPriceAnswer(q,entities,data,result){
     return {
       title:`Historical position: ${entity.name}`,
       body:`At ${fmt(stats.current)}, ${entity.name} is around the <strong>${Math.round(stats.percentile*100)}th percentile</strong> of the available captured history. In plain terms, about ${Math.round(stats.percentile*100)}% of recorded prices were at or below the current price.`,
-      evidence:`Recorded low ${fmt(stats.low)} · Median ${fmt(stats.median)} · High ${fmt(stats.high)} · ${stats.points} points.`
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Recorded low ${fmt(stats.low)} · Median ${fmt(stats.median)} · High ${fmt(stats.high)} · ${stats.points} saved points.`
     };
   }
 
@@ -333,7 +386,7 @@ function historicalPriceAnswer(q,entities,data,result){
     return {
       title:`Recorded price statistics: ${entity.name}`,
       body:`Current: <strong>${fmt(stats.current)}</strong><br>Highest recorded: <strong>${fmt(stats.high)}</strong><br>Lowest recorded: <strong>${fmt(stats.low)}</strong><br>Average: <strong>${fmt(stats.average)}</strong><br>Median: <strong>${fmt(stats.median)}</strong><br>Current percentile: <strong>${Math.round(stats.percentile*100)}th</strong>.`,
-      evidence:`Calculated from ${stats.points} captured price points. Missing scans remain gaps, and the values describe the advisor’s observed history rather than the game’s official lifetime record.`
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Calculated from ${stats.points} saved price points. Missing scans remain gaps, and the values describe the advisor’s observed history rather than the game’s official lifetime record.`
     };
   }
 

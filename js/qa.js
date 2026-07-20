@@ -91,7 +91,7 @@ function matchActiveEventFromQuestion(q,result,data){
     const score=words(ev.name).filter(w=>q.includes(w)).length;
     if(score>bestScore){best=ev;bestScore=score;}
   }
-  return bestScore?best:active[0];
+  return bestScore?best:null;
 }
 function latestActiveOccurrence(result,eventName){
   return [...(result?.eventMemory?.profiles?.[eventName]?result.eventMemory.occurrences||[]:[])];
@@ -179,6 +179,251 @@ function advisorHistoryPointCount(data){
       (c.history||[]).filter(v=>Number.isFinite(Number(v)) && Number(v)>0).length
     )
   );
+}
+
+
+function validPriceSeries(values){
+  return (values||[])
+    .map(Number)
+    .filter(v=>Number.isFinite(v) && v>0);
+}
+
+function commodityFromData(data,key){
+  return (data?.commodities||[]).find(c=>c.key===key) || null;
+}
+
+function commodityPriceSeries(data,result,key){
+  const c=commodityFromData(data,key);
+  const o=optionForKey(result,key);
+
+  // Prefer the longest history available. The current price is appended only
+  // when it is not already the final point.
+  const candidates=[
+    validPriceSeries(c?.history),
+    validPriceSeries(o?.history)
+  ].sort((a,b)=>b.length-a.length);
+
+  const series=[...(candidates[0]||[])];
+  const current=Number(c?.price ?? o?.price ?? 0);
+  if(Number.isFinite(current) && current>0 && series[series.length-1]!==current){
+    series.push(current);
+  }
+  return series;
+}
+
+function quantileSorted(sorted,p){
+  if(!sorted.length) return null;
+  const pos=(sorted.length-1)*Math.max(0,Math.min(1,p));
+  const lo=Math.floor(pos), hi=Math.ceil(pos);
+  if(lo===hi) return sorted[lo];
+  return sorted[lo]+(sorted[hi]-sorted[lo])*(pos-lo);
+}
+
+function historicalStatsFor(data,result,key){
+  const series=commodityPriceSeries(data,result,key);
+  if(!series.length) return null;
+  const sorted=[...series].sort((a,b)=>a-b);
+  const sum=series.reduce((a,b)=>a+b,0);
+  const current=series[series.length-1];
+  const high=sorted[sorted.length-1];
+  const low=sorted[0];
+  const average=sum/series.length;
+  const median=quantileSorted(sorted,.5);
+  const percentile=sorted.filter(v=>v<=current).length/sorted.length;
+  const highIndex=series.lastIndexOf(high);
+  const lowIndex=series.lastIndexOf(low);
+  return {
+    series,sorted,current,high,low,average,median,percentile,
+    points:series.length,highIndex,lowIndex,
+    currentVsHigh:high?current/high:0,
+    currentVsLow:low?current/low-1:0
+  };
+}
+
+function extractAskedPrice(q){
+  const m=q.match(/\$?\s*([\d,]+(?:\.\d+)?)\s*(k|m|b)?\b/i);
+  if(!m) return null;
+  let n=Number(m[1].replace(/,/g,''));
+  const suffix=(m[2]||'').toLowerCase();
+  if(suffix==='k') n*=1e3;
+  if(suffix==='m') n*=1e6;
+  if(suffix==='b') n*=1e9;
+  return Number.isFinite(n) && n>0 ? n : null;
+}
+
+function isHistoricalPriceQuestion(q){
+  return /highest|all[ -]?time high|record high|peak price|lowest|all[ -]?time low|record low|bottom price|average price|mean price|median price|typical price|price history|historical stats?|statistics?|percentile|how cheap|how expensive|ever (?:been|hit|reached|crossed|gone|traded)|(?:been|was|is) above|(?:been|was|is) below|how many times/.test(q);
+}
+
+function historicalPriceAnswer(q,entities,data,result){
+  if(!entities?.length) return null;
+  const entity=entities[0];
+  const stats=historicalStatsFor(data,result,entity.key);
+  if(!stats) return {
+    title:`No recorded price history for ${entity.name}`,
+    body:'The advisor does not currently have usable captured prices for this commodity.',
+    evidence:'The advisor only reports prices it has actually received; it does not invent missing history.'
+  };
+
+  const wantsHigh=/highest|all[ -]?time high|record high|peak|maximum|ever been/.test(q) && !/change|rise|jump|gain/.test(q);
+  const wantsLow=/lowest|all[ -]?time low|record low|bottom|minimum/.test(q) && !/change|fall|drop|loss/.test(q);
+  const wantsAverage=/average|mean|typical/.test(q);
+  const wantsMedian=/median/.test(q);
+  const wantsPercentile=/percentile|how cheap|how expensive/.test(q);
+  const wantsSummary=/history|statistics?|stats?|summary/.test(q);
+  const threshold=extractAskedPrice(q);
+  const asksAbove=/above|over|higher than|crossed|hit/.test(q);
+  const asksBelow=/below|under|lower than/.test(q);
+  const asksCount=/how many times|times has|times did/.test(q);
+  const currentPctOfHigh=stats.currentVsHigh*100;
+
+  if(threshold && (asksAbove || asksBelow)){
+    const matches=stats.series.filter(v=>asksBelow ? v<threshold : v>threshold).length;
+    const relation=asksBelow?'below':'above';
+    return {
+      title:`${entity.name}: recorded prices ${relation} ${fmt(threshold)}`,
+      body:asksCount
+        ? `${entity.name} appears ${matches} time${matches===1?'':'s'} ${relation} ${fmt(threshold)} in the captured price points available to this advisor.`
+        : `${matches>0?'Yes':'No'}—the advisor ${matches>0?'has':'has not'} recorded ${entity.name} ${relation} ${fmt(threshold)} in its available history.${matches>0?` It occurred in ${matches} captured point${matches===1?'':'s'}.`:''}`,
+      evidence:`${stats.points} captured price points · Recorded range ${fmt(stats.low)}–${fmt(stats.high)}. Captures are observations, not guaranteed evenly spaced intervals.`
+    };
+  }
+
+  if(wantsHigh){
+    return {
+      title:`Highest recorded price: ${entity.name}`,
+      body:`The highest price available to this advisor is <strong>${fmt(stats.high)}</strong>. The current price is ${fmt(stats.current)}, which is ${currentPctOfHigh.toFixed(1)}% of that recorded high.`,
+      evidence:`Based on ${stats.points} captured price points · Recorded low ${fmt(stats.low)} · Average ${fmt(stats.average)}. “Recorded high” means the highest price the advisor has seen, not a guaranteed game-wide maximum.`
+    };
+  }
+
+  if(wantsLow){
+    return {
+      title:`Lowest recorded price: ${entity.name}`,
+      body:`The lowest price available to this advisor is <strong>${fmt(stats.low)}</strong>. The current price is ${fmt(stats.current)}, or ${pct(stats.currentVsLow)} above that recorded low.`,
+      evidence:`Based on ${stats.points} captured price points · Recorded high ${fmt(stats.high)} · Median ${fmt(stats.median)}.`
+    };
+  }
+
+  if(wantsAverage && !wantsMedian){
+    return {
+      title:`Average recorded price: ${entity.name}`,
+      body:`The arithmetic average of the available captured prices is <strong>${fmt(stats.average)}</strong>. The current price is ${fmt(stats.current)}, ${stats.current>=stats.average?pct(stats.current/stats.average-1)+' above':pct(1-stats.current/stats.average)+' below'} that average.`,
+      evidence:`${stats.points} captured price points · Median ${fmt(stats.median)} · Range ${fmt(stats.low)}–${fmt(stats.high)}.`
+    };
+  }
+
+  if(wantsMedian){
+    return {
+      title:`Median recorded price: ${entity.name}`,
+      body:`The median captured price is <strong>${fmt(stats.median)}</strong>. Half of the available observations are at or below it and half are at or above it.`,
+      evidence:`Current ${fmt(stats.current)} · Average ${fmt(stats.average)} · ${stats.points} captured price points.`
+    };
+  }
+
+  if(wantsPercentile){
+    return {
+      title:`Historical position: ${entity.name}`,
+      body:`At ${fmt(stats.current)}, ${entity.name} is around the <strong>${Math.round(stats.percentile*100)}th percentile</strong> of the available captured history. In plain terms, about ${Math.round(stats.percentile*100)}% of recorded prices were at or below the current price.`,
+      evidence:`Recorded low ${fmt(stats.low)} · Median ${fmt(stats.median)} · High ${fmt(stats.high)} · ${stats.points} points.`
+    };
+  }
+
+  if(wantsSummary){
+    return {
+      title:`Recorded price statistics: ${entity.name}`,
+      body:`Current: <strong>${fmt(stats.current)}</strong><br>Highest recorded: <strong>${fmt(stats.high)}</strong><br>Lowest recorded: <strong>${fmt(stats.low)}</strong><br>Average: <strong>${fmt(stats.average)}</strong><br>Median: <strong>${fmt(stats.median)}</strong><br>Current percentile: <strong>${Math.round(stats.percentile*100)}th</strong>.`,
+      evidence:`Calculated from ${stats.points} captured price points. Missing scans remain gaps, and the values describe the advisor’s observed history rather than the game’s official lifetime record.`
+    };
+  }
+
+  return null;
+}
+
+const EVENT_REASONING_THEMES = [
+  {
+    type:'Enforcement',
+    test:/police|raid|crackdown|customs|seizure|arrest|patrol|inspection|task force|authorities|federal|sting/,
+    direction:'Supply is more likely to tighten than expand, creating possible upward price pressure.',
+    commodities:['counterfeit_bills','prescription_pills','uncut_cocaine','military_hardware','exotic_animals','stolen_art'],
+    rationale:'Law-enforcement activity can interrupt trafficking, seize inventory, or make distribution riskier.'
+  },
+  {
+    type:'Shipping / logistics',
+    test:/dock|port|shipping|shipment|freight|cargo|border|route|transport|trucking|warehouse|delivery|canal/,
+    direction:'Disrupted transport usually reduces near-term supply and can support prices; restored or expanded transport can do the opposite.',
+    commodities:['prescription_pills','uncut_cocaine','military_hardware','exotic_animals','stolen_art','enriched_uranium','stolen_electronics'],
+    rationale:'These commodities depend heavily on movement through ports, borders, warehouses, or long supply chains.'
+  },
+  {
+    type:'Supply expansion',
+    test:/glut|new supplier|surplus|floods? the market|overstock|large shipment|production boom|cheap supply/,
+    direction:'More supply generally creates downward price pressure.',
+    commodities:['prescription_pills','uncut_cocaine','military_hardware','stolen_electronics','enriched_uranium'],
+    rationale:'Additional inventory gives buyers more options and weakens scarcity.'
+  },
+  {
+    type:'Supply shortage',
+    test:/shortage|scarcity|supplier disappears|factory closes|route blocked|embargo|strike|disruption|lost shipment/,
+    direction:'Less supply generally creates upward price pressure.',
+    commodities:['prescription_pills','uncut_cocaine','military_hardware','stolen_electronics','enriched_uranium'],
+    rationale:'Restricted inventory increases scarcity until supply routes recover.'
+  },
+  {
+    type:'Heist / theft',
+    test:/heist|robbery|stolen collection|museum|gallery|vault|burglary|theft/,
+    direction:'A fresh influx of stolen inventory can pressure the targeted market downward, while publicity or scarcity can later reverse the effect.',
+    commodities:['stolen_art','stolen_electronics','counterfeit_bills'],
+    rationale:'The immediate effect depends on whether the event adds sellable inventory or removes scarce goods from circulation.'
+  },
+  {
+    type:'Celebrity / cultural demand',
+    test:/celebrity|scandal|viral|fashion|collector|auction|movie|music|influencer|trend/,
+    direction:'Demand can shift quickly, but the sign is ambiguous until the price response is observed.',
+    commodities:['stolen_art','exotic_animals','stolen_electronics'],
+    rationale:'Public attention can either increase desirability or make ownership riskier.'
+  },
+  {
+    type:'Financial',
+    test:/bank|currency|cash|inflation|counterfeit|treasury|financial|market panic|recession/,
+    direction:'The likely direction depends on whether the event raises demand for alternative cash or increases detection and enforcement.',
+    commodities:['counterfeit_bills'],
+    rationale:'Currency confidence, liquidity, and anti-counterfeiting pressure directly affect fake-cash demand and risk.'
+  },
+  {
+    type:'Technology / industrial demand',
+    test:/technology|tech boom|reactor|nuclear|energy|defense contract|military buildup|electronics shortage|chip/,
+    direction:'Higher industrial or strategic demand can create upward pressure on related scarce inputs.',
+    commodities:['enriched_uranium','military_hardware','stolen_electronics'],
+    rationale:'Strategic materials and equipment react to changes in industrial, energy, and defense demand.'
+  }
+];
+
+function inferEventReasoning(eventName){
+  const n=normalizeQuestion(eventName);
+  const matches=EVENT_REASONING_THEMES.filter(t=>t.test.test(n));
+  if(!matches.length){
+    return {
+      types:['Unclassified'],
+      direction:'The wording does not support a reliable rule-based direction yet.',
+      commodities:[],
+      rationale:'The advisor should wait for measured price behavior rather than force a narrative.'
+    };
+  }
+  const keys=[...new Set(matches.flatMap(m=>m.commodities))];
+  return {
+    types:matches.map(m=>m.type),
+    direction:matches.map(m=>m.direction).join(' '),
+    commodities:keys,
+    rationale:matches.map(m=>m.rationale).join(' ')
+  };
+}
+
+function formatEventAge(minutes){
+  const m=Number(minutes||0);
+  if(m>=1440) return `${(m/1440).toFixed(m%1440?1:0)} days`;
+  if(m>=60) return `${(m/60).toFixed(m%60?1:0)} hours`;
+  return `${m} minutes`;
 }
 
 function advisorKnowledgeAnswer(q,data,result){
@@ -331,7 +576,7 @@ function advisorKnowledgeAnswer(q,data,result){
   if(/ask the advisor|help mode|what can (you|the advisor) answer|how do i use.*advisor/.test(q)){
     return {
       title:'Ask the Advisor help',
-      body:'You can ask about how any page section works, current commodities, two-way comparisons, active events, buy or sell thresholds, cash, trade cost, portfolio allocations, saved history, confidence, or whether holding versus switching is worthwhile. Examples: “Explain Move Records,” “What does Supply glut do?”, “How long is the sparkline?”, or “Why hold cash?”',
+      body:'You can ask about page sections, current commodities, comparisons, active events, thresholds, cash, trade cost, portfolio allocations, saved history, confidence, and holding versus switching. Historical questions are also supported, such as “What is the highest Uranium has been?”, “What is Pills’ average price?”, “Has Art been above $30k?”, and “Show me Uranium statistics.”',
       evidence:'Help questions are answered from the advisor’s built-in knowledge; market questions use the latest analyzed snapshot.'
     };
   }
@@ -350,41 +595,64 @@ function specificEventKnowledgeAnswer(q,result,data){
     .split(/\s+/)
     .filter(w=>w.length>=4 && !['event','ago','hits','street','streets','affected'].includes(w));
 
-  const explicitMatch=eventWords.filter(w=>q.includes(w)).length>=1;
-  const asksWhat=/what does|what is|explain|tell me about|meaning|effect|do\??$/.test(q);
-
+  const explicitMatch=eventWords.some(w=>q.includes(w));
+  const asksWhat=/what does|what is|explain|tell me about|meaning|effect|likely affect|do\??$/.test(q);
   if(!explicitMatch || !asksWhat) return null;
 
   const activeProfile=result?.eventMemory?.active?.[event.name]||
     result?.eventMemory?.profiles?.[event.name]||
     null;
 
-  const eventType=activeProfile?.eventType||event.eventType||'Unknown';
-  const expected=activeProfile?.expectedDirection||event.expectedDirection||null;
-  const targetKey=eventTargetKey(event.name);
-  const targetName=targetKey ? nameFor(targetKey) : null;
+  const learnedType=activeProfile?.eventType||event.eventType||null;
+  const learnedExpected=activeProfile?.expectedDirection||event.expectedDirection||null;
+  const directTargetKey=eventTargetKey(event.name);
+  const inferred=inferEventReasoning(event.name);
   const occurrenceCount=activeProfile?.occurrences||0;
   const classificationConfidence=
     activeProfile?.classificationConfidence ?? event.classificationConfidence ?? 0;
 
-  const directionText=
-    expected==='up' || String(expected).toLowerCase()==='bullish'
-      ? 'upward pressure'
-      : expected==='down' || String(expected).toLowerCase()==='bearish'
-        ? 'downward pressure'
-        : 'no fixed direction yet';
+  const likelyKeys=directTargetKey
+    ? [directTargetKey,...inferred.commodities.filter(k=>k!==directTargetKey)]
+    : inferred.commodities;
+  const likelyNames=likelyKeys.map(nameFor).filter(Boolean);
+  const typeText=[learnedType,...inferred.types].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(' / ') || 'Unclassified';
 
-  const targetText=targetName
-    ? ` It is specifically associated with ${targetName}.`
-    : ' No single target commodity was identified from the event text.';
+  let measuredText='';
+  const profile=result?.eventMemory?.profiles?.[event.name];
+  if(profile?.summary){
+    const ranked=(result?.commodityOptions||[]).map(o=>{
+      const stat=closestEventStat(profile,o.key,event.ageMinutes);
+      return stat ? {name:o.name,...stat} : null;
+    }).filter(Boolean).sort((a,b)=>Math.abs(b.avg)-Math.abs(a.avg)).slice(0,3);
+
+    if(ranked.length){
+      measuredText=` The strongest measured responses so far are ${ranked.map(x=>`${x.name} ${x.avg>=0?'+':''}${pct(x.avg)} over ${x.window>=60?Math.round(x.window/60)+'h':x.window+'m'} (${x.n} occurrence${x.n===1?'':'s'})`).join('; ')}.`;
+    }
+  }
+
+  const learnedDirectionText=
+    learnedExpected==='up' || String(learnedExpected).toLowerCase()==='bullish'
+      ? 'The rule table currently expects upward pressure.'
+      : learnedExpected==='down' || String(learnedExpected).toLowerCase()==='bearish'
+        ? 'The rule table currently expects downward pressure.'
+        : '';
+
+  const commodityText=likelyNames.length
+    ? `The commodities most plausibly exposed are <strong>${likelyNames.join(', ')}</strong>.`
+    : 'No commodity can be identified confidently from the wording alone.';
+
+  const confidencePlain=occurrenceCount>=3
+    ? 'Repeated observations are beginning to matter more than the wording.'
+    : occurrenceCount>=1
+      ? 'History is still thin, so this remains a working interpretation.'
+      : 'This is economic reasoning only until captured price behavior confirms or contradicts it.';
 
   return {
     title:event.name,
-    body:`The advisor classifies this as <strong>${eventType}</strong>. Its rule-based expectation is <strong>${directionText}</strong>.${targetText} That expectation remains separate from measured history: the advisor will rely more heavily on the actual repeated price response as additional independent occurrences are captured.`,
-    evidence:`Displayed age: ${event.ageMinutes||0} minutes · Tracked occurrences: ${occurrenceCount} · Classification confidence: ${Math.round(classificationConfidence*100)}%.`
+    body:`This looks like a <strong>${typeText}</strong> event. ${inferred.rationale} ${inferred.direction} ${learnedDirectionText} ${commodityText} ${confidencePlain}${measuredText}`,
+    evidence:`Displayed age: ${formatEventAge(event.ageMinutes)} · Tracked occurrences: ${occurrenceCount} · Classification confidence: ${Math.round(classificationConfidence*100)}%. Rule-based reasoning and measured history are kept separate.`
   };
 }
-
 function askAdvisor(question){
   const q=normalizeQuestion(question);
   if(!q) return {title:'Ask me something about the advisor or current assessment.',body:'For example: “How long is the sparkline?”, “Explain Move Records,” “Why Pills?”, or “Is this worth the trades?”',evidence:''};
@@ -394,12 +662,23 @@ function askAdvisor(question){
 
   if(!lastData || !lastResult) return {title:'Analyze the market first.',body:'That question needs a current Black Market snapshot. General help questions about the advisor can be answered without one.',evidence:''};
 
+  let entities=findQuestionEntities(q);
+  if(!entities.length && advisorLastEntity && /it|its|that|this commodity|same one/.test(q)){
+    entities=[{key:advisorLastEntity,name:nameFor(advisorLastEntity)}];
+  }
+  if(entities.length) advisorLastEntity=entities[0].key;
+
+  // Price-history intent must run before recommendation and move-record intent.
+  // “Highest uranium has ever been” means price level, while “largest uranium
+  // rise” means consecutive-point movement.
+  if(isHistoricalPriceQuestion(q)){
+    const historyAnswer=historicalPriceAnswer(q,entities,lastData,lastResult);
+    if(historyAnswer) return historyAnswer;
+  }
+
   const specificEventAnswer=specificEventKnowledgeAnswer(q,lastResult,lastData);
   if(specificEventAnswer) return specificEventAnswer;
 
-  let entities=findQuestionEntities(q);
-  if(!entities.length && advisorLastEntity) entities=[{key:advisorLastEntity,name:nameFor(advisorLastEntity)}];
-  if(entities.length) advisorLastEntity=entities[0].key;
   if(/largest|biggest|record|highest.*change|most.*change|largest.*percent|biggest.*percent|ever.*drop|ever.*rise/.test(q)){
     const moveAns=moveRecordAnswer(q,entities,lastData);
     if(moveAns) return moveAns;
@@ -442,7 +721,7 @@ function askAdvisor(question){
       : `The optimizer tested a capped candidate mix projecting ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}). Because that candidate did not justify the trades, it was rejected; the actionable recommendation is ${lastResult.action} with zero immediate trades.`;
     return {title:`Why the advisor says “${lastResult.action}”`,body:`The decision is built from qualifying buy zones, the 33% cap, current holdings, realized-loss protection, active event evidence, and limited trades. ${decisionText}`,evidence:`Confidence in ${lastResult.action}: ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
   }
-  return {title:'Here is what the data can answer.',body:'I could not confidently identify the exact intent, but you can ask about a commodity by nickname, compare two commodities, challenge the 33% allocation, ask whether a switch is worth the trades, question a falling trend, or ask why cash is being held. Try naming the commodity or the specific concern.',evidence:'Examples: “Why pills?”, “Art vs Uranium?”, “Is this worth two trades?”, “Why not cash?”, “Uranium is falling—still buy?”'};
+  return {title:'I need a more specific market question.',body:'I could not confidently identify the intent. Name a commodity, event, comparison, historical statistic, or decision concern. The advisor will not convert an unclear question into a buy recommendation.',evidence:'Examples: “Highest recorded Uranium price?”, “What does Police raid on the docks do?”, “Art vs Uranium?”, “Is this worth two trades?”, or “Uranium is falling—still buy?”'};
 }
 function renderMoveRecords(data){
   const table=document.getElementById('moveRecordsTable');

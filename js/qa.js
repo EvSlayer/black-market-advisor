@@ -777,8 +777,19 @@ function specificEventKnowledgeAnswer(q,result,data){
     .filter(w=>w.length>=4 && !['event','ago','hits','street','streets','affected'].includes(w));
 
   const explicitMatch=eventWords.some(w=>q.includes(w));
-  const asksWhat=/what does|what is|explain|tell me about|meaning|effect|likely affect|do\??$/.test(q);
+  const asksWhat=/what does|what is|what happens|what will|how does|how will|explain|tell me about|meaning|effect|impact|likely affect|affect|do\??$/.test(q);
   if(!explicitMatch || !asksWhat) return null;
+
+  const normalizedEventWords=eventWords.map(normalizeQuestion).filter(Boolean);
+  const rawCopies=rawEvents.filter(item=>{
+    const candidate=normalizeQuestion(item?.name||item?.raw||'');
+    return normalizedEventWords.length && normalizedEventWords.every(word=>candidate.includes(word));
+  }).length;
+  const pageCopies=(data?.events||[]).filter(item=>{
+    const candidate=normalizeQuestion(item);
+    return normalizedEventWords.length && normalizedEventWords.every(word=>candidate.includes(word));
+  }).length;
+  const activeCopies=Math.max(1,rawCopies,pageCopies);
 
   const activeProfile=result?.eventMemory?.active?.[event.name]||
     result?.eventMemory?.profiles?.[event.name]||
@@ -828,10 +839,14 @@ function specificEventKnowledgeAnswer(q,result,data){
       ? 'History is still thin, so this remains a working interpretation.'
       : 'This is economic reasoning only until captured price behavior confirms or contradicts it.';
 
+  const duplicateText=activeCopies>1
+    ? ` The current snapshot contains <strong>${activeCopies} active copies</strong> of this event. The advisor treats that as greater event exposure, but it does not assume the price effect doubles unless captured history demonstrates a stacking effect.`
+    : '';
+
   return {
     title:event.name,
-    body:`This looks like a <strong>${typeText}</strong> event. ${inferred.rationale} ${inferred.direction} ${learnedDirectionText} ${commodityText} ${confidencePlain}${measuredText}`,
-    evidence:`Displayed age: ${formatEventAge(event.ageMinutes)} · Tracked occurrences: ${occurrenceCount} · Classification confidence: ${Math.round(classificationConfidence*100)}%. Rule-based reasoning and measured history are kept separate.`
+    body:`This looks like a <strong>${typeText}</strong> event.${duplicateText} ${inferred.rationale} ${inferred.direction} ${learnedDirectionText} ${commodityText} ${confidencePlain}${measuredText}`,
+    evidence:`Active copies detected: ${activeCopies} · Displayed age: ${formatEventAge(event.ageMinutes)} · Tracked historical occurrences: ${occurrenceCount} · Classification confidence: ${Math.round(classificationConfidence*100)}%. Rule-based reasoning, simultaneous copies, and measured history are kept separate.`
   };
 }
 
@@ -1337,7 +1352,11 @@ function askAdvisor(question,selectedCategory='auto'){
   }
 
   let entities=findQuestionEntities(q);
-  if(!entities.length && advisorLastEntity && /it|its|that|this commodity|same one/.test(q)){
+  const usesPriorCommodityReference=
+    /\b(?:it|its|that commodity|this commodity|same commodity|same one)\b/.test(q) &&
+    !/\b(?:this|that|same)\s+event\b/.test(q);
+
+  if(!entities.length && advisorLastEntity && usesPriorCommodityReference){
     entities=[{key:advisorLastEntity,name:nameFor(advisorLastEntity),index:-1}];
   }
   if(entities.length) advisorLastEntity=entities[0].key;

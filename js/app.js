@@ -6,7 +6,7 @@
   const baseUrl = currentScript?.src ? new URL('.', currentScript.src) : new URL('js/', window.location.href);
   const load = file => new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = new URL(`${file}?v=10`, baseUrl).href;
+    script.src = new URL(`${file}?v=11`, baseUrl).href;
     script.async = false;
     script.onload = resolve;
     script.onerror = () => reject(new Error(`Could not load ${file}`));

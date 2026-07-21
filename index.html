@@ -10,7 +10,7 @@
 <div class="wrap">
   <div class="hero">
     <div><h1>Black Market Advisor</h1><div class="sub">Capture the current market and get a 50%-cap portfolio plan, buy/sell zones, trade steps, and event-aware decision support.</div></div>
-    <div class="pill">V2.6: Move records + compact capture</div>
+    <div class="pill">V2.7: Question types + leaderboard ranking</div>
   </div>
 
 
@@ -243,18 +243,33 @@
 
     <section class="card" style="margin-top:16px">
       <h2>Ask the Advisor</h2>
-      <div class="mini" style="margin-bottom:10px">Ask naturally. Exact wording is not required: “pills,” “Prescription Pills,” “arts,” “Uranium,” and casual phrasing are recognized. Answers use the current snapshot and the advisor’s saved history—not outside guesses.</div>
+      <div class="mini" style="margin-bottom:10px">Choose a question type for reliable routing, or leave Auto-detect selected. Ranking uses the leaderboard, your logged-in profile ID, the current market, remaining trades, and time left.</div>
+      <div id="advisorCategoryRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px 0;">
+        <label for="advisorCategory" style="font-weight:700;">Question type</label>
+        <select id="advisorCategory" style="min-width:210px;max-width:100%;padding:10px 12px;border-radius:10px;background:#101722;color:inherit;border:1px solid #34415a;">
+          <option value="auto" selected>Auto-detect</option>
+          <option value="history">History</option>
+          <option value="comparison">Comparison</option>
+          <option value="switch">Switch Decision</option>
+          <option value="exit">Exit Strategy</option>
+          <option value="entry">Entry Strategy</option>
+          <option value="events">Events</option>
+          <option value="statistics">Statistics</option>
+          <option value="portfolio">Portfolio</option>
+          <option value="ranking">Ranking</option>
+        </select>
+      </div>
       <div class="advisor-chat">
-        <textarea id="advisorQuestion" placeholder="Example: Uranium has been trending down… are you for real about buying it now?"></textarea>
+        <textarea id="advisorQuestion" placeholder="Ask naturally; the selected question type controls the answer engine."></textarea>
         <button class="btn" id="askAdvisorBtn" type="button">Ask</button>
       </div>
       <div class="advisor-chips" id="advisorChips">
-        <button class="advisor-chip" type="button">Why invest in Pills?</button>
-        <button class="advisor-chip" type="button">Could Stolen Art drop more?</button>
-        <button class="advisor-chip" type="button">Why is anything above 50%?</button>
-        <button class="advisor-chip" type="button">Is this worth the trades?</button>
-        <button class="advisor-chip" type="button">Why not stay in cash?</button>
-        <button class="advisor-chip" type="button">What is the largest % change observed?</button>
+        <button class="advisor-chip" type="button">When should I sell Uranium?</button>
+        <button class="advisor-chip" type="button">Should I sell Uranium and buy Military Hardware?</button>
+        <button class="advisor-chip" type="button">What is the highest Uranium has been?</button>
+        <button class="advisor-chip" type="button">What does Police raid on the docks do?</button>
+        <button class="advisor-chip" type="button">Is the current rebalance worth the trades?</button>
+        <button class="advisor-chip" type="button">How should I catch the next rank?</button>
       </div>
       <div id="advisorAnswer" class="advisor-answer hidden"></div>
     </section>
@@ -303,6 +318,6 @@
   <div class="footer-note">This tool does not predict the next tick. It creates a diversified portfolio plan under the 50% cap using saved price history, buy/sell thresholds, trade costs, cash discipline, and multi-window event intelligence.</div>
 </div>
 <script src="js/discord.js?v=6"></script>
-<script src="js/app.js?v=9"></script>
+<script src="js/app.js?v=10"></script>
 </body>
 </html>

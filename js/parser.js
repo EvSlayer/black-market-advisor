@@ -1,3 +1,4 @@
+window.BM_PARSER_VERSION='v10-leaderboard-ranking';
 /* Black Market Advisor HTML parser.
    Extracts market prices, portfolio data, active events, current user identity,
    leaderboard standings, and ranking context from the same captured page. */

@@ -1,3 +1,4 @@
+window.BM_QA_VERSION='v10-dropdown-ranking';
 const ADVISOR_ALIASES = {
   counterfeit_bills:['counterfeit bills','counterfeit bill','counterfeit cash','fake cash','fake money','bills','counterfeit'],
   stolen_electronics:['stolen electronics','electronics','electronic'],
@@ -98,6 +99,7 @@ function capAnswer(result){
 }
 function explainCommodity(o,result,q){
   const trend=recentTrend(o); const perc=pricePercentile(o); const rank=rankOfOption(result,o.key);
+  const capText=`${Math.round(advisorCommodityCapPct(result)*100)}%`;
   const upside=o.target&&o.price?o.target/o.price-1:0;
   const expectedAtTarget=result?.currentValue && o.price ? result.currentValue*(o.target/o.price) : 0;
   const event=o.eventSignal;
@@ -108,11 +110,11 @@ function explainCommodity(o,result,q){
   let title=`Assessment: ${o.name}`;
   let body='';
   if(worst){
-    body=`Past yield alone is not the reason to buy it. The advisor is evaluating the entry now: ${o.name} is ${entryLabel(o)}, ranks #${rank||'—'} by the current model, and has ${pct(upside)} upside to the estimated target. A historically weak commodity should only receive allocation after stronger qualifying opportunities reach the 33% cap—or if its current entry is unusually cheap.`;
+    body=`Past yield alone is not the reason to buy it. The advisor is evaluating the entry now: ${o.name} is ${entryLabel(o)}, ranks #${rank||'—'} by the current model, and has ${pct(upside)} upside to the estimated target. A historically weak commodity should only receive allocation after stronger qualifying opportunities reach the ${capText} cap—or if its current entry is unusually cheap.`;
   } else if(falling){
     body=`Your concern is valid. ${o.name} is ${trend.label} over the latest captured points (${pct(trend.pct)}), and the current price is around the ${Math.round(perc*100)}th percentile of saved history. ${entryLabel(o)}. The advisor should not buy merely because the target is high; the entry threshold, event signal, and trade cost must still justify it.${whyBuy && !o.inManualBuyZone?' At this price I would treat it as a watch, not an automatic buy.':''}`;
   } else {
-    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to 33% per commodity and must pass the trade-cost test.`:''}`;
+    body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to ${capText} per commodity and must pass the trade-cost test.`:''}`;
   }
   const evidence=`Current ${fmt(o.price)} · Buy threshold ${fmt(o.buyThreshold)} · Sell threshold ${fmt(o.sellThreshold)} · Historical percentile ${Math.round(perc*100)}th · Recent trend ${trend.label} ${pct(trend.pct)}.${eventText}`;
   return {title,body,evidence};
@@ -1408,33 +1410,7 @@ function submitAdvisorQuestion(text,categoryOverride){
 
 function ensureAdvisorCategoryDropdown(){
   const question=document.getElementById('advisorQuestion');
-  if(!question || document.getElementById('advisorCategory')) return;
-
-  const chat=question.closest('.advisor-chat')||question.parentElement;
-  if(!chat) return;
-
-  const row=document.createElement('div');
-  row.id='advisorCategoryRow';
-  row.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px 0;';
-
-  const label=document.createElement('label');
-  label.htmlFor='advisorCategory';
-  label.textContent='Question type';
-  label.style.cssText='font-weight:700;';
-
-  const select=document.createElement('select');
-  select.id='advisorCategory';
-  select.style.cssText='min-width:210px;max-width:100%;padding:10px 12px;border-radius:10px;background:#101722;color:inherit;border:1px solid #34415a;';
-
-  for(const [value,text] of ADVISOR_CATEGORIES){
-    const option=document.createElement('option');
-    option.value=value;
-    option.textContent=text;
-    select.appendChild(option);
-  }
-
-  const saved=localStorage.getItem('bm_advisor_question_category');
-  if(ADVISOR_CATEGORIES.some(x=>x[0]===saved)) select.value=saved;
+  if(!question) return;
 
   const placeholders={
     auto:'Ask naturally; the advisor will select the answer engine.',
@@ -1449,14 +1425,50 @@ function ensureAdvisorCategoryDropdown(){
     ranking:'Example: I am trailing the next rank—how should I recover?'
   };
 
+  let select=document.getElementById('advisorCategory');
+
+  // Older index files do not contain the dropdown, so keep a JS fallback.
+  if(!select){
+    const chat=question.closest('.advisor-chat')||question.parentElement;
+    if(!chat) return;
+
+    const row=document.createElement('div');
+    row.id='advisorCategoryRow';
+    row.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px 0;';
+
+    const label=document.createElement('label');
+    label.htmlFor='advisorCategory';
+    label.textContent='Question type';
+    label.style.cssText='font-weight:700;';
+
+    select=document.createElement('select');
+    select.id='advisorCategory';
+    select.style.cssText='min-width:210px;max-width:100%;padding:10px 12px;border-radius:10px;background:#101722;color:inherit;border:1px solid #34415a;';
+
+    for(const [value,text] of ADVISOR_CATEGORIES){
+      const option=document.createElement('option');
+      option.value=value;
+      option.textContent=text;
+      select.appendChild(option);
+    }
+
+    row.append(label,select);
+    chat.parentElement?.insertBefore(row,chat);
+  }
+
+  const saved=localStorage.getItem('bm_advisor_question_category');
+  if(ADVISOR_CATEGORIES.some(x=>x[0]===saved)) select.value=saved;
+
   const refreshPlaceholder=()=>{
     question.placeholder=placeholders[select.value]||placeholders.auto;
     localStorage.setItem('bm_advisor_question_category',select.value);
   };
 
-  select.addEventListener('change',refreshPlaceholder);
-  row.append(label,select);
-  chat.parentElement?.insertBefore(row,chat);
+  if(select.dataset.advisorCategoryBound!=='1'){
+    select.addEventListener('change',refreshPlaceholder);
+    select.dataset.advisorCategoryBound='1';
+  }
+
   refreshPlaceholder();
 }
 

@@ -13,12 +13,22 @@ function normalizeQuestion(q){
   return String(q||'').toLowerCase().replace(/[’']/g,"'").replace(/[^a-z0-9%$?.!\s-]/g,' ').replace(/\s+/g,' ').trim();
 }
 function findQuestionEntities(q){
-  const n=normalizeQuestion(q); const hits=[];
+  const n=normalizeQuestion(q);
+  const hits=[];
+
   for(const [key,aliases] of Object.entries(ADVISOR_ALIASES)){
-    const hit=aliases.find(a=>n.includes(a));
-    if(hit) hits.push({key,name:nameFor(key),alias:hit});
+    let best=null;
+    for(const alias of aliases){
+      const index=n.indexOf(alias);
+      if(index<0) continue;
+      if(!best || index<best.index || (index===best.index && alias.length>best.alias.length)){
+        best={alias,index};
+      }
+    }
+    if(best) hits.push({key,name:nameFor(key),alias:best.alias,index:best.index});
   }
-  return hits;
+
+  return hits.sort((a,b)=>a.index-b.index);
 }
 function optionForKey(result,key){ return result?.commodityOptions?.find(o=>o.key===key) || result?.options?.find(o=>o.key===key); }
 function pricePercentile(o){
@@ -27,9 +37,15 @@ function pricePercentile(o){
   return arr.filter(x=>x<=o.price).length/arr.length;
 }
 function recentTrend(o,points=4){
-  const h=(o?.history||[]).filter(x=>Number.isFinite(x)&&x>0);
-  if(h.length<2) return {pct:0,label:'insufficient history'};
-  const end=Number(o.price||h[h.length-1]); const start=h[Math.max(0,h.length-points)];
+  const commodity=(typeof lastData!=='undefined' ? lastData?.commodities : [])
+    ?.find(c=>c.key===o?.key);
+  const source=commodity?.sparkHistory?.length
+    ? commodity.sparkHistory
+    : (o?.sparkHistory?.length ? o.sparkHistory : o?.history||[]);
+  const h=source.map(Number).filter(x=>Number.isFinite(x)&&x>0);
+  if(h.length<2) return {pct:0,label:'insufficient recent history'};
+  const end=Number(o?.price||h[h.length-1]);
+  const start=h[Math.max(0,h.length-1-Math.max(1,points))];
   const p=start?end/start-1:0;
   return {pct:p,label:p>.03?'rising':p<-.03?'falling':'mostly flat'};
 }
@@ -49,10 +65,36 @@ function rankOfOption(result,key){
   const rows=(result?.commodityOptions||[]).slice().sort((a,b)=>b.score-a.score);
   const i=rows.findIndex(o=>o.key===key); return i<0?null:i+1;
 }
+function advisorCommodityCapPct(result){
+  const planCap=Number(result?.portfolioPlan?.cap);
+  if(Number.isFinite(planCap) && planCap>0 && planCap<=1) return planCap;
+
+  const mode=String(document.getElementById('allocationMode')?.value||'').toLowerCase();
+  if(mode.includes('50')) return .50;
+  if(mode.includes('33')) return .33;
+
+  return .33;
+}
+
 function capAnswer(result){
-  const bad=(result?.portfolioPlan?.allocations||[]).filter(a=>a.key!=='__cash' && a.pct>.33001);
-  if(bad.length) return {title:'You found an allocation bug.',body:`The 33% limit is hard. ${bad.map(a=>`${a.name} is shown at ${Math.round(a.pct*100)}%`).join(', ')}. Anything above 33% should be reduced to 33%, with the remainder kept as cash or assigned to another qualifying commodity.`,evidence:'The optimizer should never allocate more than 33.0% to one commodity.'};
-  return {title:'The current plan respects the 33% cap.',body:'No commodity in the recommended allocation is above 33%. A displayed 34% should only be cash—the leftover created because three 33% positions total 99%.',evidence:'Commodity cap: 33%; cash is not a commodity and may hold the remaining 1% or more.'};
+  const cap=advisorCommodityCapPct(result);
+  const limitText=`${Math.round(cap*100)}%`;
+  const bad=(result?.portfolioPlan?.allocations||[])
+    .filter(a=>a.key!=='__cash' && Number(a.pct)>cap+.0001);
+
+  if(bad.length){
+    return {
+      title:'You found an allocation bug.',
+      body:`The current commodity limit is ${limitText}. ${bad.map(a=>`${a.name} is shown at ${Math.round(a.pct*100)}%`).join(', ')}. Any excess should remain cash or be assigned to another qualifying commodity.`,
+      evidence:`Detected portfolio-plan cap: ${limitText}.`
+    };
+  }
+
+  return {
+    title:`The current plan respects the ${limitText} cap.`,
+    body:`No commodity in the recommended allocation exceeds ${limitText}. Cash is not a commodity and may hold any remainder.`,
+    evidence:`Detected portfolio-plan cap: ${limitText}.`
+  };
 }
 function explainCommodity(o,result,q){
   const trend=recentTrend(o); const perc=pricePercentile(o); const rank=rankOfOption(result,o.key);
@@ -176,7 +218,8 @@ function advisorHistoryPointCount(data){
   return Math.max(
     0,
     ...(data?.commodities||[]).map(c=>
-      (c.history||[]).filter(v=>Number.isFinite(Number(v)) && Number(v)>0).length
+      (c.sparkHistory?.length ? c.sparkHistory : c.history||[])
+        .filter(v=>Number.isFinite(Number(v)) && Number(v)>0).length
     )
   );
 }
@@ -308,21 +351,71 @@ function isHistoricalPriceQuestion(q){
   return /highest|all[ -]?time high|record high|peak price|lowest|all[ -]?time low|record low|bottom price|average price|mean price|median price|typical price|price history|historical stats?|statistics?|percentile|how cheap|how expensive|ever (?:been|hit|reached|crossed|gone|traded)|(?:been|was|is) above|(?:been|was|is) below|how many times/.test(q);
 }
 
-function historicalPriceAnswer(q,entities,data,result){
-  if(!entities?.length) return null;
-  const entity=entities[0];
-  const stats=historicalStatsFor(data,result,entity.key);
-  if(!stats) return {
-    title:`No recorded price history for ${entity.name}`,
-    body:'The advisor does not currently have usable captured prices for this commodity.',
-    evidence:'The advisor only reports prices it has actually received; it does not invent missing history.'
+function configuredMarketRange(key){
+  let saved={};
+  try{ saved=JSON.parse(localStorage.getItem('bm_assumptions')||'{}'); }catch(e){ saved={}; }
+
+  const readValue=field=>{
+    const input=document.querySelector(`input[data-a="${key}"][data-f="${field}"]`);
+    const raw=input?.value ?? saved?.[key]?.[field] ?? '';
+    const value=typeof cleanNum==='function' ? cleanNum(raw) : Number(String(raw).replace(/[^\d.-]/g,''));
+    return Number.isFinite(value) && value>0 ? value : null;
   };
 
+  return {min:readValue('min'),max:readValue('max')};
+}
+
+function savedCaptureSeries(key){
+  try{
+    const mem=typeof loadMarketMemory==='function'
+      ? loadMarketMemory()
+      : JSON.parse(localStorage.getItem('bm_market_memory_v1')||'{"captures":[]}');
+
+    return (mem?.captures||[])
+      .map(c=>({
+        at:c?.capturedAt||null,
+        price:Number(c?.prices?.[key])
+      }))
+      .filter(x=>x.at && Number.isFinite(x.price) && x.price>0)
+      .sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+  }catch(e){
+    return [];
+  }
+}
+
+function formatAdvisorDate(value){
+  const d=new Date(value);
+  if(!Number.isFinite(d.getTime())) return 'unknown time';
+  return d.toLocaleString(undefined,{
+    month:'short',
+    day:'numeric',
+    year:d.getFullYear()!==new Date().getFullYear()?'numeric':undefined,
+    hour:'numeric',
+    minute:'2-digit'
+  });
+}
+
+function historicalPriceAnswer(q,entities,data,result){
+  if(!entities?.length) return null;
+
+  const entity=entities[0];
+  const stats=historicalStatsFor(data,result,entity.key);
+  if(!stats){
+    return {
+      title:`No saved price history for ${entity.name}`,
+      body:'The advisor does not currently have usable captured prices for this commodity.',
+      evidence:'Only prices actually received by the advisor are reported.'
+    };
+  }
+
+  const configured=configuredMarketRange(entity.key);
+  const captures=savedCaptureSeries(entity.key);
   const wantsHigh=/highest|all[ -]?time high|record high|peak|maximum|ever been/.test(q) && !/change|rise|jump|gain/.test(q);
   const wantsLow=/lowest|all[ -]?time low|record low|bottom|minimum/.test(q) && !/change|fall|drop|loss/.test(q);
   const wantsAverage=/average|mean|typical/.test(q);
   const wantsMedian=/median/.test(q);
   const wantsPercentile=/percentile|how cheap|how expensive/.test(q);
+  const wantsWhen=/when|what time|what date|last time/.test(q);
   const wantsSummary=/history|statistics?|stats?|summary/.test(q);
   const threshold=extractAskedPrice(q);
   const asksAbove=/above|over|higher than|crossed|hit/.test(q);
@@ -331,68 +424,105 @@ function historicalPriceAnswer(q,entities,data,result){
   const currentPctOfHigh=stats.currentVsHigh*100;
 
   if(threshold && (asksAbove || asksBelow)){
-    const matches=stats.series.filter(v=>asksBelow ? v<threshold : v>threshold).length;
     const relation=asksBelow?'below':'above';
+    const savedMatches=stats.series.filter(v=>asksBelow?v<threshold:v>threshold).length;
+    const captureMatches=captures.filter(x=>asksBelow?x.price<threshold:x.price>threshold);
+    const last=captureMatches[captureMatches.length-1]||null;
+
+    if(wantsWhen){
+      return {
+        title:`Last saved ${entity.name} price ${relation} ${fmt(threshold)}`,
+        body:last
+          ? `The latest timestamped capture ${relation} ${fmt(threshold)} was <strong>${fmt(last.price)}</strong> on <strong>${formatAdvisorDate(last.at)}</strong>.`
+          : `The saved price series ${savedMatches?'contains':'does not contain'} values ${relation} ${fmt(threshold)}, but no timestamped capture is available for the latest matching point.`,
+        evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · ${captures.length} timestamped captures.`
+      };
+    }
+
     return {
-      title:`${entity.name}: recorded prices ${relation} ${fmt(threshold)}`,
+      title:`${entity.name}: saved prices ${relation} ${fmt(threshold)}`,
       body:asksCount
-        ? `${entity.name} appears ${matches} time${matches===1?'':'s'} ${relation} ${fmt(threshold)} in the captured price points available to this advisor.`
-        : `${matches>0?'Yes':'No'}—the advisor ${matches>0?'has':'has not'} recorded ${entity.name} ${relation} ${fmt(threshold)} in its available history.${matches>0?` It occurred in ${matches} captured point${matches===1?'':'s'}.`:''}`,
-      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Recorded range ${fmt(stats.low)}–${fmt(stats.high)}. Missing scans remain gaps.`
+        ? `${entity.name} appears in ${savedMatches} saved price point${savedMatches===1?'':'s'} ${relation} ${fmt(threshold)}.`
+        : `${savedMatches>0?'Yes':'No'}—the advisor ${savedMatches>0?'has':'has not'} saved ${entity.name} ${relation} ${fmt(threshold)}.${savedMatches>0?` It appears in ${savedMatches} saved point${savedMatches===1?'':'s'}.`:''}`,
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Recorded range ${fmt(stats.low)}–${fmt(stats.high)} · Missing scans remain gaps.`
     };
   }
 
   if(wantsHigh){
+    const exactCapture=[...captures].reverse().find(x=>x.price===stats.high);
+    const knownText=configured.max && Math.abs(configured.max-stats.high)>=1
+      ? ` Your configured known market maximum is <strong>${fmt(configured.max)}</strong>.`
+      : '';
+    const whenText=wantsWhen
+      ? exactCapture
+        ? ` It was timestamped on <strong>${formatAdvisorDate(exactCapture.at)}</strong>.`
+        : ' The highest point was imported from saved price history without an exact timestamp.'
+      : '';
+
     return {
-      title:`Highest recorded price: ${entity.name}`,
-      body:`The highest price available to this advisor is <strong>${fmt(stats.high)}</strong>. The current price is ${fmt(stats.current)}, which is ${currentPctOfHigh.toFixed(1)}% of that recorded high.`,
-      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Recorded low ${fmt(stats.low)} · Average ${fmt(stats.average)}. “Recorded high” means the highest price this advisor has saved, not a guaranteed game-wide maximum.`
+      title:`Highest saved price: ${entity.name}`,
+      body:`The highest price this advisor has saved is <strong>${fmt(stats.high)}</strong>. The current price is ${fmt(stats.current)}, which is ${currentPctOfHigh.toFixed(1)}% of that saved high.${knownText}${whenText}`,
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Saved low ${fmt(stats.low)} · Average ${fmt(stats.average)}. Saved history and configured market knowledge are reported separately.`
     };
   }
 
   if(wantsLow){
+    const exactCapture=[...captures].reverse().find(x=>x.price===stats.low);
+    const knownText=configured.min && Math.abs(configured.min-stats.low)>=1
+      ? ` Your configured known market minimum is <strong>${fmt(configured.min)}</strong>.`
+      : '';
+    const whenText=wantsWhen
+      ? exactCapture
+        ? ` It was timestamped on <strong>${formatAdvisorDate(exactCapture.at)}</strong>.`
+        : ' The lowest point was imported from saved price history without an exact timestamp.'
+      : '';
+
     return {
-      title:`Lowest recorded price: ${entity.name}`,
-      body:`The lowest price available to this advisor is <strong>${fmt(stats.low)}</strong>. The current price is ${fmt(stats.current)}, or ${pct(stats.currentVsLow)} above that recorded low.`,
-      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Recorded high ${fmt(stats.high)} · Median ${fmt(stats.median)}.`
+      title:`Lowest saved price: ${entity.name}`,
+      body:`The lowest price this advisor has saved is <strong>${fmt(stats.low)}</strong>. The current price is ${fmt(stats.current)}, or ${pct(stats.currentVsLow)} above that saved low.${knownText}${whenText}`,
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Saved high ${fmt(stats.high)} · Median ${fmt(stats.median)}.`
     };
   }
 
   if(wantsAverage && !wantsMedian){
     return {
-      title:`Average recorded price: ${entity.name}`,
-      body:`The arithmetic average of the available captured prices is <strong>${fmt(stats.average)}</strong>. The current price is ${fmt(stats.current)}, ${stats.current>=stats.average?pct(stats.current/stats.average-1)+' above':pct(1-stats.current/stats.average)+' below'} that average.`,
+      title:`Average saved price: ${entity.name}`,
+      body:`The arithmetic average of the saved prices is <strong>${fmt(stats.average)}</strong>. The current price is ${fmt(stats.current)}, ${stats.current>=stats.average?pct(stats.current/stats.average-1)+' above':pct(1-stats.current/stats.average)+' below'} that average.`,
       evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · Median ${fmt(stats.median)} · Range ${fmt(stats.low)}–${fmt(stats.high)}.`
     };
   }
 
   if(wantsMedian){
     return {
-      title:`Median recorded price: ${entity.name}`,
-      body:`The median captured price is <strong>${fmt(stats.median)}</strong>. Half of the available observations are at or below it and half are at or above it.`,
-      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Current ${fmt(stats.current)} · Average ${fmt(stats.average)} · ${stats.points} saved price points.`
+      title:`Median saved price: ${entity.name}`,
+      body:`The median saved price is <strong>${fmt(stats.median)}</strong>. Half of the available saved observations are at or below it and half are at or above it.`,
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Current ${fmt(stats.current)} · Average ${fmt(stats.average)} · ${stats.points} saved points.`
     };
   }
 
   if(wantsPercentile){
     return {
       title:`Historical position: ${entity.name}`,
-      body:`At ${fmt(stats.current)}, ${entity.name} is around the <strong>${Math.round(stats.percentile*100)}th percentile</strong> of the available captured history. In plain terms, about ${Math.round(stats.percentile*100)}% of recorded prices were at or below the current price.`,
-      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Recorded low ${fmt(stats.low)} · Median ${fmt(stats.median)} · High ${fmt(stats.high)} · ${stats.points} saved points.`
+      body:`At ${fmt(stats.current)}, ${entity.name} is around the <strong>${Math.round(stats.percentile*100)}th percentile</strong> of saved history. About ${Math.round(stats.percentile*100)}% of saved prices were at or below the current price.`,
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Saved low ${fmt(stats.low)} · Median ${fmt(stats.median)} · High ${fmt(stats.high)}.`
     };
   }
 
-  if(wantsSummary){
+  if(wantsSummary || /how far back|how much history/.test(q)){
+    const knownRange=[
+      configured.min?`Configured minimum ${fmt(configured.min)}`:null,
+      configured.max?`Configured maximum ${fmt(configured.max)}`:null
+    ].filter(Boolean).join(' · ');
+
     return {
-      title:`Recorded price statistics: ${entity.name}`,
-      body:`Current: <strong>${fmt(stats.current)}</strong><br>Highest recorded: <strong>${fmt(stats.high)}</strong><br>Lowest recorded: <strong>${fmt(stats.low)}</strong><br>Average: <strong>${fmt(stats.average)}</strong><br>Median: <strong>${fmt(stats.median)}</strong><br>Current percentile: <strong>${Math.round(stats.percentile*100)}th</strong>.`,
-      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · Calculated from ${stats.points} saved price points. Missing scans remain gaps, and the values describe the advisor’s observed history rather than the game’s official lifetime record.`
+      title:`Saved price history: ${entity.name}`,
+      body:`Current: <strong>${fmt(stats.current)}</strong><br>Highest saved: <strong>${fmt(stats.high)}</strong><br>Lowest saved: <strong>${fmt(stats.low)}</strong><br>Average: <strong>${fmt(stats.average)}</strong><br>Median: <strong>${fmt(stats.median)}</strong><br>Current percentile: <strong>${Math.round(stats.percentile*100)}th</strong>${knownRange?`<br>${knownRange}`:''}.`,
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved price points · ${captures.length} timestamped captures. Missing scans remain gaps.`
     };
   }
 
   return null;
 }
-
 const EVENT_REASONING_THEMES = [
   {
     type:'Enforcement',
@@ -542,16 +672,12 @@ function advisorKnowledgeAnswer(q,data,result){
     return {
       title:'Recommended Portfolio',
       body:'Recommended Portfolio shows the advisor’s preferred capped allocation after considering clean entry zones, current holdings, cash, trade cost, limited trades, event evidence, and opportunity cost. A theoretical candidate can still be rejected when the expected improvement is too small.',
-      evidence:'The active interface limits a single commodity to 50% of the portfolio.'
+      evidence:`The current engine reports a ${Math.round(advisorCommodityCapPct(result)*100)}% maximum per commodity.`
     };
   }
 
-  if(/50%|50 percent|fifty percent|portfolio cap|maximum per commodity/.test(q)){
-    return {
-      title:'50% portfolio cap',
-      body:'The advisor allows no more than 50% of the portfolio in one commodity. The rule reduces single-commodity risk while still allowing a strong position. Any remainder can be spread among other qualifying commodities or held as cash.',
-      evidence:'Current portfolio rule: 50% maximum per commodity.'
-    };
+  if(/33%|50%|33 percent|50 percent|thirty three|fifty percent|portfolio cap|maximum per commodity/.test(q)){
+    return capAnswer(result);
   }
 
   if(/waiting for|waiting section|what am i waiting/.test(q)){
@@ -629,7 +755,7 @@ function advisorKnowledgeAnswer(q,data,result){
   if(/ask the advisor|help mode|what can (you|the advisor) answer|how do i use.*advisor/.test(q)){
     return {
       title:'Ask the Advisor help',
-      body:'You can ask about page sections, current commodities, comparisons, active events, thresholds, cash, trade cost, portfolio allocations, saved history, confidence, and holding versus switching. Historical questions are also supported, such as “What is the highest Uranium has been?”, “What is Pills’ average price?”, “Has Art been above $30k?”, and “Show me Uranium statistics.”',
+      body:'Choose Auto-detect or select History, Comparison, Switch Decision, Exit Strategy, Entry Strategy, Events, Statistics, Portfolio, or Ranking. The selected category overrides automatic routing. Ranking uses the live leaderboard parsed from the Black Market page.',
       evidence:'Help questions are answered from the advisor’s built-in knowledge; market questions use the latest analyzed snapshot.'
     };
   }
@@ -706,75 +832,527 @@ function specificEventKnowledgeAnswer(q,result,data){
     evidence:`Displayed age: ${formatEventAge(event.ageMinutes)} · Tracked occurrences: ${occurrenceCount} · Classification confidence: ${Math.round(classificationConfidence*100)}%. Rule-based reasoning and measured history are kept separate.`
   };
 }
-function askAdvisor(question){
+
+const ADVISOR_CATEGORIES = [
+  ['auto','Auto-detect'],
+  ['history','History'],
+  ['comparison','Comparison'],
+  ['switch','Switch Decision'],
+  ['exit','Exit Strategy'],
+  ['entry','Entry Strategy'],
+  ['events','Events'],
+  ['statistics','Statistics'],
+  ['portfolio','Portfolio'],
+  ['ranking','Ranking']
+];
+
+function advisorCategoryLabel(value){
+  return ADVISOR_CATEGORIES.find(x=>x[0]===value)?.[1] || 'Auto-detect';
+}
+
+function detectAdvisorCategory(q,entities=[]){
+  if(/rank|ranking|leaderboard|place\b|trailing|behind|ahead|catch|pass|overtake|protect.*rank|recuperate|recover.*gap|first place|second place|third place/.test(q)) return 'ranking';
+  if(/should i sell.*(?:and|then).*(?:buy|move)|switch(?:ing)?\s+(?:from|out of|to)|move\s+(?:from|out of).*(?:to|into)|sell.*buy/.test(q)) return 'switch';
+  if(/when should i sell|when.*take profit|take profits?|cash out|exit strategy|when.*exit|sell target|what price.*sell|time to sell/.test(q)) return 'exit';
+  if(/should i buy|buy now|when should i buy|entry strategy|wait.*buy|buy.*wait|good entry|worth buying|invest in|drop more/.test(q)) return 'entry';
+  if(/event|news|customs|crackdown|raid|supplier|heist|glut|scandal|shortage|shipping|docks?|police/.test(q)) return 'events';
+  if(/average|mean|median|percentile|volatil|standard deviation|largest.*(?:rise|fall|move|change)|biggest.*(?:rise|fall|move|change)|statistics?|stats?|most expensive|cheapest|highest average|lowest average/.test(q)) return 'statistics';
+  if(/highest|lowest|all[ -]?time|record high|record low|price history|ever been|when was|last time|how far back|how much history|been above|been below/.test(q)) return 'history';
+  if(entities.length>=2 || /\bvs\b|versus|compare|which is better|better between/.test(q)) return 'comparison';
+  if(/portfolio|allocation|cash|cap|33%|50%|trade|split|diversif|current mix|recommended plan/.test(q)) return 'portfolio';
+  if(entities.length) return 'entry';
+  return 'portfolio';
+}
+
+function holdingForKey(data,key){
+  return (data?.holdings||[]).find(h=>h.key===key)||null;
+}
+
+function currentDominantEntity(data,result){
+  const h=[...(data?.holdings||[])]
+    .filter(x=>(x.value||x.qty*(x.current||x.price)||0)>0)
+    .sort((a,b)=>(b.value||b.qty*(b.current||b.price||0))-(a.value||a.qty*(a.current||a.price||0)))[0];
+
+  const key=h?.key || result?.dominantHolding?.key || result?.currentOpt?.key || null;
+  return key ? {key,name:nameFor(key),index:-1} : null;
+}
+
+function sourceAndTargetEntities(q,entities,data,result){
+  const ordered=[...(entities||[])].sort((a,b)=>(a.index??0)-(b.index??0));
+  const sellPos=q.search(/\bsell\b|\bfrom\b|\bout of\b/);
+  const buyPos=q.search(/\bbuy\b|\binto\b|\bswitch to\b|\bmove to\b/);
+
+  let source=null,target=null;
+  if(sellPos>=0) source=ordered.find(e=>(e.index??0)>sellPos && (buyPos<0 || (e.index??0)<buyPos))||null;
+  if(buyPos>=0) target=ordered.find(e=>(e.index??0)>buyPos)||null;
+
+  if(!source && ordered.length>=2) source=ordered[0];
+  if(!target && ordered.length>=2) target=ordered.find(e=>e.key!==source?.key)||ordered[1];
+
+  const dominant=currentDominantEntity(data,result);
+  if(!source && target) source=dominant;
+  if(!target && source){
+    const best=(result?.commodityOptions||[])
+      .filter(o=>o.key!==source.key)
+      .sort((a,b)=>b.score-a.score)[0];
+    if(best) target={key:best.key,name:best.name,index:-1};
+  }
+
+  return {source,target};
+}
+
+function comparisonCategoryAnswer(q,entities,data,result){
+  if(entities.length<2){
+    return {
+      title:'Name two commodities to compare.',
+      body:'Example: “Compare Enriched Uranium and Military Hardware.” Comparison explains the differences without automatically recommending a trade.',
+      evidence:'The Comparison category requires two commodity names.'
+    };
+  }
+
+  const a=optionForKey(result,entities[0].key);
+  const b=optionForKey(result,entities[1].key);
+  if(!a||!b) return null;
+
+  const ans=compareCommodities(a,b,result);
+  ans.body+=` <strong>This is a comparison, not a switch recommendation.</strong> Choose Switch Decision for an explicit yes/no/wait answer.`;
+  return ans;
+}
+
+function switchDecisionAnswer(q,entities,data,result){
+  const {source,target}=sourceAndTargetEntities(q,entities,data,result);
+  if(!source || !target){
+    return {
+      title:'Name the position and destination.',
+      body:'Example: “Should I sell Uranium and buy Military Hardware?”',
+      evidence:'A switch decision needs a source holding and a proposed destination.'
+    };
+  }
+
+  const sourceOpt=optionForKey(result,source.key);
+  const targetOpt=optionForKey(result,target.key);
+  if(!sourceOpt||!targetOpt) return null;
+
+  const holding=holdingForKey(data,source.key);
+  const plan=result?.portfolioPlan||{};
+  const recommended=plan.recommendedTrades||[];
+  const candidate=plan.candidateTrades||plan.trades||[];
+  const recommendedSell=recommended.some(t=>/SELL/.test(String(t.action)) && t.key===source.key);
+  const recommendedBuy=recommended.some(t=>/BUY/.test(String(t.action)) && t.key===target.key);
+  const candidateSell=candidate.some(t=>/SELL/.test(String(t.action)) && t.key===source.key);
+  const candidateBuy=candidate.some(t=>/BUY/.test(String(t.action)) && t.key===target.key);
+  const protectedLoss=(plan.protectedLossKeys||[]).includes(source.key);
+  const sourceUpside=sourceOpt.price>0?sourceOpt.target/sourceOpt.price-1:0;
+  const targetUpside=targetOpt.price>0?targetOpt.target/targetOpt.price-1:0;
+  const edge=targetUpside-sourceUpside;
+  const tradesNeeded=(candidateSell?1:0)+(candidateBuy?1:0);
+  let verdict,reason;
+
+  if(!holding){
+    verdict='NO ACTION';
+    reason=`The captured portfolio does not show ${source.name} as a current holding, so there is nothing to sell from that position.`;
+  }else if(recommendedSell && recommendedBuy){
+    verdict='YES — SWITCH NOW';
+    reason=`The authoritative capped portfolio plan explicitly recommends selling ${source.name} and buying ${target.name}. The candidate clears the opportunity-cost and trade-budget tests.`;
+  }else if(protectedLoss){
+    verdict='NO — HOLD THE SOURCE';
+    reason=`${source.name} is protected by the realized-loss rule. The current model does not see enough additional edge in ${target.name} to justify locking in the loss.`;
+  }else if(!targetOpt.inManualBuyZone){
+    verdict='WAIT';
+    reason=`${target.name} is ${entryLabel(targetOpt)}, so buying it now would chase the destination rather than enter cleanly.`;
+  }else if(candidateSell && candidateBuy && !plan.meaningfulRebalance){
+    verdict='NO — NOT WORTH THE TRADES YET';
+    reason=`The optimizer considered this rotation, but its projected advantage did not clear the opportunity-cost test.`;
+  }else if(targetOpt.score>sourceOpt.score && edge>.10){
+    verdict='WAIT FOR CONFIRMATION';
+    reason=`${target.name} is numerically stronger, but the current portfolio plan does not authorize the complete switch. Wait for the source to reach a sell condition or for the destination’s edge to become large enough to clear the trade test.`;
+  }else{
+    verdict='NO — KEEP THE CURRENT POSITION';
+    reason=`The difference between the two positions is not strong enough to justify a sell-and-buy rotation right now.`;
+  }
+
+  return {
+    title:`${verdict}: ${source.name} → ${target.name}`,
+    body:`${reason} ${source.name} has ${pct(sourceUpside)} target upside and a score of ${Math.round(sourceOpt.score)}; ${target.name} has ${pct(targetUpside)} target upside and a score of ${Math.round(targetOpt.score)}.`,
+    evidence:`Source ${fmt(sourceOpt.price)} · Destination ${fmt(targetOpt.price)} · Destination ${entryLabel(targetOpt)} · Relative target-upside edge ${pct(edge)} · Candidate trades ${tradesNeeded||'none'} · Portfolio decision: ${plan.opportunityCostDecision||result.action}.`
+  };
+}
+
+function exitStrategyAnswer(q,entities,data,result){
+  const entity=entities[0]||currentDominantEntity(data,result);
+  if(!entity){
+    return {title:'No current holding identified.',body:'Name the commodity you may sell.',evidence:'Exit Strategy requires a current position.'};
+  }
+
+  const o=optionForKey(result,entity.key);
+  const h=holdingForKey(data,entity.key);
+  if(!o) return null;
+
+  const plan=result?.portfolioPlan||{};
+  const sellTrade=(plan.recommendedTrades||[]).find(t=>/SELL/.test(String(t.action)) && t.key===entity.key);
+  const candidateSell=(plan.candidateTrades||plan.trades||[]).find(t=>/SELL/.test(String(t.action)) && t.key===entity.key);
+  const trend=recentTrend(o,5);
+  const profitPct=h?.avgBuy>0 ? o.price/h.avgBuy-1 : null;
+  const bearish=!!(o.eventSignal?.confidence>=.45 && o.eventSignal.effect<0);
+  const replacement=(result?.commodityOptions||[])
+    .filter(x=>x.key!==o.key && x.inManualBuyZone && !x.inSellZone)
+    .sort((a,b)=>b.score-a.score)[0]||null;
+
+  let action;
+  if(sellTrade) action='SELL OR REDUCE NOW';
+  else if(o.inSellZone) action='SELL REVIEW NOW';
+  else if(isValidMoney(o.sellThreshold) && o.price>=o.sellThreshold*.92) action='PREPARE TO SELL';
+  else action='HOLD FOR NOW';
+
+  const triggers=[
+    `price reaches the sell threshold of <strong>${fmt(o.sellThreshold)}</strong>`,
+    `the event signal becomes reliably bearish${bearish?' (it is currently bearish)':''}`,
+    `momentum weakens after a strong rise${trend.pct<-.03?' (recent momentum is already falling)':''}`,
+    replacement?`${replacement.name} offers a clearly superior clean entry and the trade-cost test passes`:'a clearly superior replacement enters its buy zone',
+    `the capped portfolio plan explicitly recommends reducing this position`
+  ];
+
+  const lossNote=profitPct===null?'':profitPct<0
+    ? ` You are currently about ${pct(profitPct)} versus the average buy price, so selling also realizes a loss.`
+    : ` You are currently about ${pct(profitPct)} versus the average buy price.`;
+
+  return {
+    title:`${action}: ${o.name}`,
+    body:`Use these exit triggers rather than an arbitrary price guess:<br>• ${triggers.join('<br>• ')}.${lossNote}${candidateSell&&!sellTrade?' The model has considered a sale, but it is not yet an actionable trade.':''}`,
+    evidence:`Current ${fmt(o.price)} · Sell threshold ${fmt(o.sellThreshold)} · ${exitLabel(o)} · Recent trend ${trend.label} ${pct(trend.pct)} · Sell pressure ${result.sellPressure||'N/A'} · Portfolio action ${result.action}.`
+  };
+}
+
+function entryStrategyAnswer(q,entities,data,result){
+  const entity=entities[0] || (() => {
+    const best=(result?.commodityOptions||[]).slice().sort((a,b)=>b.score-a.score)[0];
+    return best?{key:best.key,name:best.name}:null;
+  })();
+
+  if(!entity) return {title:'Name a commodity to evaluate.',body:'Example: “Should I buy Pills now?”',evidence:'Entry Strategy requires a commodity.'};
+
+  const o=optionForKey(result,entity.key);
+  if(!o) return null;
+
+  const plan=result?.portfolioPlan||{};
+  const buyTrade=(plan.recommendedTrades||[]).find(t=>/BUY/.test(String(t.action)) && t.key===o.key);
+  const candidateBuy=(plan.candidateTrades||plan.trades||[]).find(t=>/BUY/.test(String(t.action)) && t.key===o.key);
+  const trend=recentTrend(o,5);
+  const bearish=!!(o.eventSignal?.confidence>=.45 && o.eventSignal.effect<0);
+  let verdict,reason;
+
+  if(buyTrade){
+    verdict='BUY NOW — WITHIN THE PORTFOLIO CAP';
+    reason='The current actionable portfolio plan includes this purchase and it clears the entry, opportunity-cost, and trade-budget tests.';
+  }else if(!o.inManualBuyZone){
+    verdict='WAIT';
+    reason=`The price is above the clean buy threshold of ${fmt(o.buyThreshold)}.`;
+  }else if(bearish && trend.pct<-.03){
+    verdict='WAIT OR BUY ONLY A PARTIAL ALLOCATION';
+    reason='The commodity is inside its normal buy zone, but both event evidence and recent movement are bearish.';
+  }else if(candidateBuy && !plan.meaningfulRebalance){
+    verdict='DO NOT FORCE THE BUY';
+    reason='The optimizer considered buying it, but the overall portfolio improvement is not large enough to justify the trade yet.';
+  }else if(o.inManualBuyZone){
+    verdict='QUALIFYING ENTRY — WATCH THE PORTFOLIO PLAN';
+    reason='The price is inside its buy zone, but the authoritative capped plan has not made it an immediate trade.';
+  }else{
+    verdict='WATCH';
+    reason='The entry is not strong enough for an immediate purchase.';
+  }
+
+  return {
+    title:`${verdict}: ${o.name}`,
+    body:`${reason} Current target upside is ${pct(o.upsidePct||0)}, and it ranks #${rankOfOption(result,o.key)||'—'} among commodities.`,
+    evidence:`Current ${fmt(o.price)} · Buy threshold ${fmt(o.buyThreshold)} · ${entryLabel(o)} · Recent trend ${trend.label} ${pct(trend.pct)} · Event evidence ${bearish?'bearish':'not strongly bearish'} · Portfolio action ${result.action}.`
+  };
+}
+
+function priceSeriesVolatility(series){
+  const a=validPriceSeries(series);
+  if(a.length<3) return null;
+  const returns=[];
+  for(let i=1;i<a.length;i++){
+    if(a[i-1]>0) returns.push(a[i]/a[i-1]-1);
+  }
+  if(returns.length<2) return null;
+  const mean=returns.reduce((s,x)=>s+x,0)/returns.length;
+  const variance=returns.reduce((s,x)=>s+(x-mean)**2,0)/(returns.length-1);
+  return Math.sqrt(Math.max(0,variance));
+}
+
+function statisticsCategoryAnswer(q,entities,data,result){
+  if(entities.length){
+    const entity=entities[0];
+    const stats=historicalStatsFor(data,result,entity.key);
+    if(!stats) return null;
+    const moves=movementStats(stats.series);
+    const volatility=priceSeriesVolatility(stats.series);
+
+    if(/largest|biggest|record.*(?:rise|fall|move|change)|most.*change/.test(q)){
+      return moveRecordAnswer(q,entities,data);
+    }
+
+    return {
+      title:`Saved statistics: ${entity.name}`,
+      body:`Current: <strong>${fmt(stats.current)}</strong><br>Average: <strong>${fmt(stats.average)}</strong><br>Median: <strong>${fmt(stats.median)}</strong><br>Highest saved: <strong>${fmt(stats.high)}</strong><br>Lowest saved: <strong>${fmt(stats.low)}</strong><br>Current percentile: <strong>${Math.round(stats.percentile*100)}th</strong><br>Consecutive-point volatility: <strong>${volatility===null?'not enough data':pct(volatility)}</strong>.`,
+      evidence:`${savedHistoryDurationText(stats.memoryMeta)} · ${stats.points} saved points · Largest rise ${moves.maxRise?pct(moves.maxRise.change):'N/A'} · Largest fall ${moves.maxFall?pct(moves.maxFall.change):'N/A'}.`
+    };
+  }
+
+  const rows=(data?.commodities||[]).map(c=>{
+    const stats=historicalStatsFor(data,result,c.key);
+    if(!stats) return null;
+    return {
+      key:c.key,name:c.name,stats,
+      volatility:priceSeriesVolatility(stats.series)||0
+    };
+  }).filter(Boolean);
+
+  if(!rows.length) return null;
+
+  let sorted,title,metric;
+  if(/volatile|volatility/.test(q)){
+    sorted=rows.sort((a,b)=>b.volatility-a.volatility);
+    title='Most volatile saved markets';
+    metric=x=>pct(x.volatility);
+  }else if(/lowest average|cheapest average/.test(q)){
+    sorted=rows.sort((a,b)=>a.stats.average-b.stats.average);
+    title='Lowest average saved prices';
+    metric=x=>fmt(x.stats.average);
+  }else if(/highest average|most expensive|highest.*mean/.test(q)){
+    sorted=rows.sort((a,b)=>b.stats.average-a.stats.average);
+    title='Highest average saved prices';
+    metric=x=>fmt(x.stats.average);
+  }else{
+    sorted=rows.sort((a,b)=>b.stats.percentile-a.stats.percentile);
+    title='Cross-market saved statistics';
+    metric=x=>`${Math.round(x.stats.percentile*100)}th percentile`;
+  }
+
+  return {
+    title,
+    body:sorted.slice(0,5).map((x,i)=>`${i+1}. <strong>${x.name}</strong> — ${metric(x)}`).join('<br>'),
+    evidence:'Calculated only from prices saved by this advisor; missing scans remain gaps.'
+  };
+}
+
+function portfolioCategoryAnswer(q,data,result){
+  if(/33%|50%|33 percent|50 percent|cap|maximum per commodity/.test(q)) return capAnswer(result);
+
+  const plan=result?.portfolioPlan||{};
+  if(/worth.*trade|trade.*worth|too many trade|trades left|opportunity cost|wasting.*trade/.test(q)){
+    const candidate=plan.candidateTrades||plan.trades||[];
+    const recommended=plan.recommendedTrades||[];
+    return {
+      title:plan.opportunityCostDecision||result.action,
+      body:`The candidate plan uses ${candidate.length} trade${candidate.length===1?'':'s'} with ${plan.tradesRemaining??data.tradesRemaining??'—'} left and reserves ${plan.tradeReserve??'—'}. It projects ${fmt(plan.projectedImprovement||0)} (${pct(plan.improvementPct||0)}) of improvement. ${plan.meaningfulRebalance?`${recommended.length} trade${recommended.length===1?' is':'s are'} actionable.`:'The candidate was rejected, so no immediate trades are recommended.'}`,
+      evidence:`Required overall edge ${pct(plan.requiredOverallPct||0)} · Required gain per trade ${fmt(plan.requiredGainPerTrade||0)}.`
+    };
+  }
+
+  if(/cash|stay out|wait|owning nothing/.test(q)){
+    const qualifying=(result?.commodityOptions||[]).filter(o=>o.inManualBuyZone&&!o.inSellZone).sort((a,b)=>b.score-a.score);
+    return {
+      title:qualifying.length?'Cash remains a valid allocation.':'Wait in cash is valid.',
+      body:qualifying.length
+        ? `${qualifying.length} commodities are in buy zones, led by ${qualifying[0].name}. Cash should still cover any allocation that lacks a clean opportunity or would require a trade that fails the opportunity-cost test.`
+        : 'No commodity currently qualifies strongly enough to force a purchase.',
+      evidence:`Cash ${fmt(data.cash||0)} · Current portfolio action ${result.action} · Clean candidates ${qualifying.map(x=>x.name).join(', ')||'none'}.`
+    };
+  }
+
+  const allocations=(plan.allocations||[]).map(a=>`${a.name} ${Math.round((a.pct||0)*100)}%`).join(', ');
+  return {
+    title:`Portfolio decision: ${result.action}`,
+    body:`The authoritative recommendation comes from the capped portfolio plan, not an uncapped single-commodity thought experiment. ${allocations?`Current proposed allocation: ${allocations}.`:''}`,
+    evidence:`Decision confidence ${result.decisionConfidence}% · Data confidence ${result.dataConfidence}% · Risk ${result.risk} · ${plan.opportunityCostDecision||''}.`
+  };
+}
+
+function eventsCategoryAnswer(q,entities,data,result){
+  const specific=specificEventKnowledgeAnswer(q,result,data);
+  if(specific) return specific;
+
+  if(/showing|positive|negative|decreas|drop|fell|rose|bullish|bearish|sign|wrong/.test(q)){
+    const direction=eventDirectionQuestionAnswer(q,entities,result,data);
+    if(direction) return direction;
+  }
+
+  const nuanced=eventVersusWaitAnswer(q,entities,result,data);
+  if(nuanced) return nuanced;
+
+  const active=data?.events||[];
+  return {
+    title:active.length?'Active market events':'No active event detected',
+    body:active.length
+      ? `Active events: ${active.join('; ')}. Ask what an event means, which commodities it may affect, or whether to buy a named commodity now or wait.`
+      : 'The current market snapshot does not contain an active event.',
+    evidence:`Tracked event profiles: ${Object.keys(result?.eventMemory?.profiles||{}).length}.`
+  };
+}
+
+function rankingContextFromData(data){
+  if(data?.ranking?.current) return data.ranking;
+
+  const rows=[...(data?.leaderboard||[])].sort((a,b)=>a.rank-b.rank);
+  const index=rows.findIndex(r=>r.isCurrentUser);
+  if(index<0) return null;
+
+  const current=rows[index];
+  const above=index>0?rows[index-1]:null;
+  const below=index<rows.length-1?rows[index+1]:null;
+  const gapToPass=above?Math.max(0,above.portfolio-current.portfolio+1):0;
+
+  return {
+    current,above,below,
+    gapToPass,
+    gapToAbove:above?Math.max(0,above.portfolio-current.portfolio):0,
+    leadOverBelow:below?Math.max(0,current.portfolio-below.portfolio):0,
+    requiredPctToPass:current.portfolio>0?gapToPass/current.portfolio:0
+  };
+}
+
+function rankingGoalFromQuestion(q,ranking){
+  if(/protect|defend|hold.*rank|stay.*(?:place|rank)|avoid.*drop/.test(q)) return 'protect';
+  if(/maximize|highest final|win|first place|go for first/.test(q)) return 'maximize';
+  if(/catch|pass|overtake|trailing|behind|recuperate|recover|move up|next rank/.test(q)) return 'catch';
+  return ranking?.current?.rank===1?'protect':'catch';
+}
+
+function rankingCategoryAnswer(q,data,result){
+  const r=rankingContextFromData(data);
+  if(!r?.current){
+    return {
+      title:'Current leaderboard position was not found.',
+      body:'The parser needs the logged-in profile ID and a matching leaderboard row from the same Black Market capture.',
+      evidence:`Parsed leaderboard rows: ${(data?.leaderboard||[]).length}.`
+    };
+  }
+
+  const goal=rankingGoalFromQuestion(q,r);
+  const plan=result?.portfolioPlan||{};
+  const mode=String(document.getElementById('mode')?.value||'balanced');
+  const timeText=data?.timeRemaining||'time remaining unavailable';
+  const trades=data?.tradesRemaining;
+  const candidates=(result?.commodityOptions||[])
+    .filter(o=>o.inManualBuyZone&&!o.inSellZone)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,3);
+  const candidateText=candidates.length
+    ? candidates.map(x=>`${x.name} (${pct(x.upsidePct||0)} target upside)`).join(', ')
+    : 'no clean buy-zone candidates';
+
+  if(r.current.rank===1){
+    return {
+      title:'Ranking strategy: defend first place',
+      body:`You are currently #1 with ${fmt(r.current.portfolio)}. ${r.below?`Your lead over ${r.below.player} is ${fmt(r.leadOverBelow)}.`:''} Do not add risk merely to increase an already winning score. Follow the normal capped portfolio plan and protect the lead unless a rebalance independently clears the opportunity-cost test.`,
+      evidence:`Goal ${goal} · Time remaining ${timeText} · Mode ${mode} · Trades remaining ${Number.isFinite(trades)?trades:'unknown'} · Portfolio action ${result.action}.`
+    };
+  }
+
+  const required=r.requiredPctToPass||0;
+  const cushionPct=r.current.portfolio>0?(r.leadOverBelow||0)/r.current.portfolio:0;
+  const urgency=required<=.03?'small':required<=.10?'moderate':'large';
+  let strategy;
+
+  if(goal==='protect'){
+    strategy=`Protect the current rank. Your cushion over ${r.below?.player||'the player below'} is ${fmt(r.leadOverBelow||0)} (${pct(cushionPct)} of your portfolio). Avoid a speculative rotation unless the normal portfolio engine independently recommends it.`;
+  }else{
+    strategy=`To pass ${r.above?.player||'the player above'} at the current standings, you need about ${fmt(r.gapToPass)} of relative outperformance, equal to ${pct(required)} of your current portfolio. That is a ${urgency} gap.`;
+    if(plan.meaningfulRebalance && (plan.recommendedTrades||[]).length){
+      strategy+=` The current capped plan supports controlled aggression because it already clears the trade-cost test; use only its ${plan.recommendedTrades.length} recommended trade${plan.recommendedTrades.length===1?'':'s'}.`;
+    }else{
+      strategy+=` The current portfolio plan does not justify a rebalance, so do not force a high-risk move solely because of the leaderboard.`;
+    }
+  }
+
+  return {
+    title:`Ranking strategy: ${goal==='protect'?'protect #'+r.current.rank:'chase #'+(r.above?.rank||r.current.rank-1)}`,
+    body:`You are <strong>#${r.current.rank}</strong> with <strong>${fmt(r.current.portfolio)}</strong>. ${strategy} Current clean opportunities: ${candidateText}. Remember that the player above can also gain, so ${pct(required)} is the minimum relative gap—not a guaranteed winning return.`,
+    evidence:`Above: ${r.above?`${r.above.player} ${fmt(r.above.portfolio)}`:'none'} · Below: ${r.below?`${r.below.player} ${fmt(r.below.portfolio)}`:'none'} · Time remaining ${timeText} · Mode ${mode} · Trades remaining ${Number.isFinite(trades)?trades:'unknown'} · Portfolio decision ${result.action}.`
+  };
+}
+
+function categoryPrompt(category){
+  const examples={
+    history:'Ask about a commodity’s saved high, low, date, threshold crossing, or history span.',
+    comparison:'Name two commodities to compare.',
+    switch:'Name the holding to sell and the commodity to buy.',
+    exit:'Name the holding and ask when or whether to sell it.',
+    entry:'Name the commodity and ask whether to buy now or wait.',
+    events:'Name an active event or a commodity affected by it.',
+    statistics:'Name a commodity or ask for a cross-market statistic such as volatility.',
+    portfolio:'Ask about the capped allocation, cash, trades, or current plan.',
+    ranking:'Ask how to catch the next rank, protect your position, or maximize final value.'
+  };
+  return {title:`More detail needed for ${advisorCategoryLabel(category)}.`,body:examples[category]||'Add a specific market question.',evidence:'The selected dropdown category controls the answer engine.'};
+}
+
+function routeAdvisorCategory(category,q,entities,data,result){
+  if(category==='history') return historicalPriceAnswer(q,entities,data,result) || categoryPrompt(category);
+  if(category==='comparison') return comparisonCategoryAnswer(q,entities,data,result) || categoryPrompt(category);
+  if(category==='switch') return switchDecisionAnswer(q,entities,data,result) || categoryPrompt(category);
+  if(category==='exit') return exitStrategyAnswer(q,entities,data,result) || categoryPrompt(category);
+  if(category==='entry') return entryStrategyAnswer(q,entities,data,result) || categoryPrompt(category);
+  if(category==='events') return eventsCategoryAnswer(q,entities,data,result) || categoryPrompt(category);
+  if(category==='statistics') return statisticsCategoryAnswer(q,entities,data,result) || categoryPrompt(category);
+  if(category==='portfolio') return portfolioCategoryAnswer(q,data,result) || categoryPrompt(category);
+  if(category==='ranking') return rankingCategoryAnswer(q,data,result) || categoryPrompt(category);
+  return null;
+}
+
+function decorateAdvisorAnswer(answer,category,selectedCategory){
+  if(!answer) return answer;
+  return {
+    ...answer,
+    category:advisorCategoryLabel(category),
+    categorySource:selectedCategory&&selectedCategory!=='auto'?'selected':'auto-detected'
+  };
+}
+
+function askAdvisor(question,selectedCategory='auto'){
   const q=normalizeQuestion(question);
-  if(!q) return {title:'Ask me something about the advisor or current assessment.',body:'For example: “How long is the sparkline?”, “Explain Move Records,” “Why Pills?”, or “Is this worth the trades?”',evidence:''};
+  if(!q){
+    return {
+      title:'Ask me something about the advisor or current assessment.',
+      body:'Choose a question type, then enter the details. Auto-detect remains available.',
+      evidence:'Examples: “Highest Uranium price?”, “Should I sell Uranium and buy Military Hardware?”, or “How do I catch the next rank?”'
+    };
+  }
 
+  const requested=String(selectedCategory||'auto').toLowerCase();
   const knowledgeAnswer=advisorKnowledgeAnswer(q,lastData,lastResult);
-  if(knowledgeAnswer) return knowledgeAnswer;
+  if(requested==='auto' && knowledgeAnswer) return decorateAdvisorAnswer(knowledgeAnswer,'auto','auto');
 
-  if(!lastData || !lastResult) return {title:'Analyze the market first.',body:'That question needs a current Black Market snapshot. General help questions about the advisor can be answered without one.',evidence:''};
+  if(!lastData || !lastResult){
+    if(knowledgeAnswer) return decorateAdvisorAnswer(knowledgeAnswer,'auto',requested);
+    return {
+      title:'Analyze the market first.',
+      body:'This category needs a current Black Market snapshot.',
+      evidence:'The Ranking category also requires the leaderboard and logged-in user identity from the captured page.'
+    };
+  }
 
   let entities=findQuestionEntities(q);
   if(!entities.length && advisorLastEntity && /it|its|that|this commodity|same one/.test(q)){
-    entities=[{key:advisorLastEntity,name:nameFor(advisorLastEntity)}];
+    entities=[{key:advisorLastEntity,name:nameFor(advisorLastEntity),index:-1}];
   }
   if(entities.length) advisorLastEntity=entities[0].key;
 
-  // Price-history intent must run before recommendation and move-record intent.
-  // “Highest uranium has ever been” means price level, while “largest uranium
-  // rise” means consecutive-point movement.
-  if(isHistoricalPriceQuestion(q)){
-    const historyAnswer=historicalPriceAnswer(q,entities,lastData,lastResult);
-    if(historyAnswer) return historyAnswer;
-  }
+  const category=requested==='auto' ? detectAdvisorCategory(q,entities) : requested;
+  const routed=routeAdvisorCategory(category,q,entities,lastData,lastResult);
+  if(routed) return decorateAdvisorAnswer(routed,category,requested);
 
-  const specificEventAnswer=specificEventKnowledgeAnswer(q,lastResult,lastData);
-  if(specificEventAnswer) return specificEventAnswer;
+  const fallback=entities.length
+    ? explainCommodity(optionForKey(lastResult,entities[0].key),lastResult,q)
+    : {
+        title:'I need a more specific market question.',
+        body:'Name a commodity, event, comparison, decision, statistic, or ranking goal.',
+        evidence:'The selected dropdown category controls which engine handles the question.'
+      };
 
-  if(/largest|biggest|record|highest.*change|most.*change|largest.*percent|biggest.*percent|ever.*drop|ever.*rise/.test(q)){
-    const moveAns=moveRecordAnswer(q,entities,lastData);
-    if(moveAns) return moveAns;
-  }
-  if(/33%|33 percent|thirty three|over the cap|max is 33|maximum.*33/.test(q)) return capAnswer(lastResult);
-  if(/worth.*trade|trade.*worth|too many trade|trades left|opportunity cost|wasting.*trade/.test(q)){
-    const p=lastResult.portfolioPlan;
-    const candidateTrades=p.candidateTrades||p.trades||[];
-    const recommendedTrades=p.recommendedTrades||[];
-    const planLabel=p.meaningfulRebalance?'recommended rebalance':'candidate rebalance';
-    return {title:p.opportunityCostDecision,body:`The ${planLabel} uses ${candidateTrades.length} trade${candidateTrades.length===1?'':'s'} with ${p.tradesRemaining} left today and reserves ${p.tradeReserve}. The projected difference is ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}), or about ${fmt(p.gainPerTrade)} per candidate trade. ${p.meaningfulRebalance?`It clears the advisor’s opportunity-cost test, so ${recommendedTrades.length} trade${recommendedTrades.length===1?' is':'s are'} actionable now.`:'It does not clear the advisor’s opportunity-cost test, so the candidate was rejected and zero trades are recommended.'}`,evidence:`Minimum edge: ${pct(p.requiredOverallPct)} overall and ${fmt(p.requiredGainPerTrade)} per trade.`};
-  }
-  if(/cash|do nothing|wait|stay out|owning nothing/.test(q) && !entities.length){
-    const qualifying=lastResult.commodityOptions.filter(o=>o.inManualBuyZone).sort((a,b)=>b.score-a.score);
-    return {title:qualifying.length?'Cash is optional, not a failure state.':'Wait in cash is valid.',body:qualifying.length?`${qualifying.length} commodities are currently inside their buy zones. The best is ${qualifying[0].name}, but cash should remain allocated wherever no clean opportunity exists or where another trade would not clear the opportunity-cost threshold.`:'No commodity currently qualifies strongly enough to force a purchase. The advisor should preserve cash until a buy threshold is reached.',evidence:`Cash ${fmt(lastData.cash)} · Clean buy-zone candidates: ${qualifying.map(o=>o.name).join(', ')||'none'}.`};
-  }
-  if(/event|news|customs|crackdown|raid|supplier|heist|glut|keep dropping|continue to drop|full extent|unaffected|no events|buy now or wait/.test(q)){
-    if(/showing|positive|negative|decreas|drop|fell|rose|bullish|bearish|sign|wrong/.test(q)){
-      const directionAnswer=eventDirectionQuestionAnswer(q,entities,lastResult,lastData);
-      if(directionAnswer) return directionAnswer;
-    }
-    const nuanced=eventVersusWaitAnswer(q,entities,lastResult,lastData);
-    if(nuanced) return nuanced;
-    const active=lastData.events||[];
-    return {title:'Event assessment',body:active.length?`Active events: ${active.join('; ')}. Name a commodity and ask whether to buy now, wait for the event to develop, or choose an unaffected alternative. The advisor will compare the normal threshold, event-adjusted threshold, event age, current movement, repeated event history, and qualifying unaffected alternatives.`:'No active events were detected in the current snapshot.',evidence:`Tracked event profiles: ${Object.keys(lastResult.eventMemory?.profiles||{}).length}.`};
-  }
-  if(entities.length>=2){
-    const a=optionForKey(lastResult,entities[0].key),b=optionForKey(lastResult,entities[1].key);
-    if(a&&b) return compareCommodities(a,b,lastResult);
-  }
-  if(entities.length){
-    const o=optionForKey(lastResult,entities[0].key);
-    if(o) return explainCommodity(o,lastResult,q);
-  }
-  if(/why|recommend|suggest|plan|portfolio/.test(q)){
-    const p=lastResult.portfolioPlan;
-    const isActionable=p.meaningfulRebalance && lastResult.action==='REBALANCE PORTFOLIO';
-    const decisionText=isActionable
-      ? `The recommended capped mix projects ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}).`
-      : `The optimizer tested a capped candidate mix projecting ${fmt(p.projectedPlan)} versus ${fmt(p.projectedCurrent)} for the current mix, a difference of ${fmt(p.projectedImprovement)} (${pct(p.improvementPct)}). Because that candidate did not justify the trades, it was rejected; the actionable recommendation is ${lastResult.action} with zero immediate trades.`;
-    return {title:`Why the advisor says “${lastResult.action}”`,body:`The decision is built from qualifying buy zones, the 33% cap, current holdings, realized-loss protection, active event evidence, and limited trades. ${decisionText}`,evidence:`Confidence in ${lastResult.action}: ${lastResult.decisionConfidence}% · Data confidence ${lastResult.dataConfidence}% · Risk ${lastResult.risk}.`};
-  }
-  return {title:'I need a more specific market question.',body:'I could not confidently identify the intent. Name a commodity, event, comparison, historical statistic, or decision concern. The advisor will not convert an unclear question into a buy recommendation.',evidence:'Examples: “Highest recorded Uranium price?”, “What does Police raid on the docks do?”, “Art vs Uranium?”, “Is this worth two trades?”, or “Uranium is falling—still buy?”'};
+  return decorateAdvisorAnswer(fallback,category,requested);
 }
 function renderMoveRecords(data){
   const table=document.getElementById('moveRecordsTable');
@@ -812,11 +1390,78 @@ function moveRecordAnswer(q,entities,data){
 function renderAdvisorAnswer(ans){
   const box=document.getElementById('advisorAnswer');
   if(!box) return;
+
   box.classList.remove('hidden');
-  box.innerHTML=`<div class="answer-title">${ans.title}</div><div>${ans.body}</div>${ans.evidence?`<div class="advisor-evidence"><strong>Data behind the answer:</strong> ${ans.evidence}</div>`:''}`;
+  const category=ans.category
+    ? `<div class="mini" style="margin-bottom:8px">Question type: <strong>${ans.category}</strong>${ans.categorySource?` (${ans.categorySource})`:''}</div>`
+    : '';
+
+  box.innerHTML=`${category}<div class="answer-title">${ans.title}</div><div>${ans.body}</div>${ans.evidence?`<div class="advisor-evidence"><strong>Data behind the answer:</strong> ${ans.evidence}</div>`:''}`;
 }
-function submitAdvisorQuestion(text){
+function submitAdvisorQuestion(text,categoryOverride){
   const q=(text ?? (document.getElementById('advisorQuestion')?.value || '')).trim();
+  const category=categoryOverride || document.getElementById('advisorCategory')?.value || 'auto';
+
   if(document.getElementById('advisorQuestion')) document.getElementById('advisorQuestion').value=q;
-  renderAdvisorAnswer(askAdvisor(q));
+  renderAdvisorAnswer(askAdvisor(q,category));
+}
+
+function ensureAdvisorCategoryDropdown(){
+  const question=document.getElementById('advisorQuestion');
+  if(!question || document.getElementById('advisorCategory')) return;
+
+  const chat=question.closest('.advisor-chat')||question.parentElement;
+  if(!chat) return;
+
+  const row=document.createElement('div');
+  row.id='advisorCategoryRow';
+  row.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px 0;';
+
+  const label=document.createElement('label');
+  label.htmlFor='advisorCategory';
+  label.textContent='Question type';
+  label.style.cssText='font-weight:700;';
+
+  const select=document.createElement('select');
+  select.id='advisorCategory';
+  select.style.cssText='min-width:210px;max-width:100%;padding:10px 12px;border-radius:10px;background:#101722;color:inherit;border:1px solid #34415a;';
+
+  for(const [value,text] of ADVISOR_CATEGORIES){
+    const option=document.createElement('option');
+    option.value=value;
+    option.textContent=text;
+    select.appendChild(option);
+  }
+
+  const saved=localStorage.getItem('bm_advisor_question_category');
+  if(ADVISOR_CATEGORIES.some(x=>x[0]===saved)) select.value=saved;
+
+  const placeholders={
+    auto:'Ask naturally; the advisor will select the answer engine.',
+    history:'Example: When was Uranium last above $40,000?',
+    comparison:'Example: Compare Uranium and Military Hardware.',
+    switch:'Example: Should I sell Uranium and buy Military Hardware?',
+    exit:'Example: When should I sell Uranium?',
+    entry:'Example: Should I buy Pills now or wait?',
+    events:'Example: What does Police raid on the docks do?',
+    statistics:'Example: Which commodity has been most volatile?',
+    portfolio:'Example: Is the current rebalance worth the trades?',
+    ranking:'Example: I am trailing the next rank—how should I recover?'
+  };
+
+  const refreshPlaceholder=()=>{
+    question.placeholder=placeholders[select.value]||placeholders.auto;
+    localStorage.setItem('bm_advisor_question_category',select.value);
+  };
+
+  select.addEventListener('change',refreshPlaceholder);
+  row.append(label,select);
+  chat.parentElement?.insertBefore(row,chat);
+  refreshPlaceholder();
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',ensureAdvisorCategoryDropdown,{once:true});
+}else{
+  ensureAdvisorCategoryDropdown();
 }

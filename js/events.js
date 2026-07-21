@@ -135,8 +135,36 @@ function parseEventAgeMinutes(text){
   return 0;
 }
 function eventTargetKey(name){
-  const m=String(name||'').match(/[—-]\s*(.+?)\s+affected$/i);
-  return m ? keyForName(m[1]) : null;
+  const normalized=normalizeEventName(name);
+
+  const validatedKey=value=>{
+    const key=keyForName(value);
+    if(!key) return null;
+
+    if(typeof COMMODITIES!=='undefined' && Array.isArray(COMMODITIES)){
+      return COMMODITIES.some(([commodityKey])=>commodityKey===key) ? key : null;
+    }
+
+    return key;
+  };
+
+  // Original event format: “Event name — Commodity affected”.
+  const affectedMatch=normalized.match(/[—-]\s*(.+?)\s+affected$/i);
+  if(affectedMatch){
+    const key=validatedKey(affectedMatch[1]);
+    if(key) return key;
+  }
+
+  // Current game format: “Supply glut hits the streets: Exotic Animals”.
+  // Only accept the suffix when it resolves to a known commodity so ordinary
+  // punctuation in an event name cannot create a false target.
+  const colonMatch=normalized.match(/:\s*([^:]+?)\s*$/);
+  if(colonMatch){
+    const key=validatedKey(colonMatch[1]);
+    if(key) return key;
+  }
+
+  return null;
 }
 function clonePrices(data){
   return Object.fromEntries((data.commodities||[]).map(c=>[c.key,Number(c.price)||0]));
@@ -348,6 +376,7 @@ function updateEventMemory(data){
         raw,
         name,
         ageMinutes: parseEventAgeMinutes(raw),
+        targetKey: eventTargetKey(name),
         eventType: classification.type,
         expectedDirection: classification.expectedDirection,
         classificationConfidence: classification.classificationConfidence,
@@ -414,7 +443,7 @@ const active = {};
     active[ev.name]={
       ...(p||{
         name:ev.name,
-        targetKey:eventTargetKey(ev.name),
+        targetKey:ev.targetKey||eventTargetKey(ev.name),
         occurrences:0,
         windows:{},
         summary:{}
@@ -476,13 +505,24 @@ function getEventSignal(eventMemory, commodityKey) {
       }
     }
 
-    const targetKey = eventTargetKey(event.name);
-    const targeted = !targetKey || targetKey === commodityKey;
+    const targetKey = event.targetKey || eventTargetKey(event.name);
+    const appliesToCommodity = !targetKey || targetKey === commodityKey;
 
-    if (!targeted && targetKey) continue;
+    if (!appliesToCommodity && targetKey) continue;
 
-    // If there is no usable history yet, still expose the classification
+    const directionPrior =
+      event.expectedDirection === "down" ? -0.12 :
+      event.expectedDirection === "up" ? 0.10 :
+      0;
+
+    const isDirectTarget = Boolean(targetKey && targetKey === commodityKey);
+
+    // If there is no usable history yet, classification still matters for an
+    // explicitly targeted event. A known supply glut should not be treated as
+    // neutral merely because the advisor has not observed several prior copies.
     if (!stat) {
+      const classificationWeight = isDirectTarget ? 0.75 : 0.35;
+
       signals.push({
         name: event.name,
         eventType: event.eventType,
@@ -490,15 +530,29 @@ function getEventSignal(eventMemory, commodityKey) {
         classificationConfidence: event.classificationConfidence,
         classificationMatched: event.classificationMatched,
 
-        avg: 0,
+        avg: directionPrior,
+        effect: directionPrior,
         n: 0,
         consistency: 0,
         historicalConfidence: 0,
-        confidence: event.classificationConfidence * 0.35,
+        confidence: Math.min(
+          1,
+          event.classificationConfidence * classificationWeight
+        ),
 
+        ageMinutes: event.ageMinutes || 0,
+        targetKey,
         window: null,
         source: "classification",
-        targeted: Boolean(targetKey)
+        targeted: isDirectTarget,
+        activeTargetedBearish:
+          isDirectTarget &&
+          event.expectedDirection === "down" &&
+          event.classificationConfidence >= 0.70,
+        activeTargetedBullish:
+          isDirectTarget &&
+          event.expectedDirection === "up" &&
+          event.classificationConfidence >= 0.70
       });
 
       continue;
@@ -517,6 +571,22 @@ function getEventSignal(eventMemory, commodityKey) {
         event.classificationConfidence * 0.25
       ) * sourceMultiplier;
 
+    // Let measured history lead, while retaining a small directional prior
+    // from a high-confidence classification. This prevents one noisy sample from
+    // completely reversing the economic meaning of a directly targeted event.
+    const measuredWeight = Math.min(0.90, 0.65 + historicalConfidence * 0.25);
+    const blendedEffect =
+      stat.avg * measuredWeight +
+      directionPrior * (1 - measuredWeight);
+
+    const strongContraryHistory =
+      stat.n >= 3 &&
+      stat.consistency >= 0.70 &&
+      (
+        (event.expectedDirection === "down" && stat.avg > 0.03) ||
+        (event.expectedDirection === "up" && stat.avg < -0.03)
+      );
+
     signals.push({
       name: event.name,
       eventType: event.eventType,
@@ -525,14 +595,28 @@ function getEventSignal(eventMemory, commodityKey) {
       classificationMatched: event.classificationMatched,
 
       avg: stat.avg,
+      effect: blendedEffect,
       n: stat.n,
       consistency: stat.consistency,
       historicalConfidence,
       confidence: Math.min(1, combinedConfidence),
 
+      ageMinutes: event.ageMinutes || 0,
+      targetKey,
       window,
       source,
-      targeted: Boolean(targetKey)
+      targeted: isDirectTarget,
+      strongContraryHistory,
+      activeTargetedBearish:
+        isDirectTarget &&
+        event.expectedDirection === "down" &&
+        event.classificationConfidence >= 0.70 &&
+        !strongContraryHistory,
+      activeTargetedBullish:
+        isDirectTarget &&
+        event.expectedDirection === "up" &&
+        event.classificationConfidence >= 0.70 &&
+        !strongContraryHistory
     });
   }
 
@@ -553,7 +637,7 @@ function getEventSignal(eventMemory, commodityKey) {
   const effect =
     signals.reduce(
       (sum, signal) =>
-        sum + signal.avg * signal.confidence,
+        sum + Number(signal.effect ?? signal.avg ?? 0) * signal.confidence,
       0
     ) / weight;
 
@@ -583,6 +667,19 @@ function getEventSignal(eventMemory, commodityKey) {
     (a, b) => b.confidence - a.confidence
   )[0];
 
+  const activeTargetedBearish = signals.some(
+    signal => signal.activeTargetedBearish
+  );
+  const activeTargetedBullish = signals.some(
+    signal => signal.activeTargetedBullish
+  );
+  const blockingSignals = signals.filter(
+    signal => signal.activeTargetedBearish
+  );
+  const youngestAgeMinutes = signals.length
+    ? Math.min(...signals.map(signal => Number(signal.ageMinutes || 0)))
+    : null;
+
   return {
     effect,
     confidence,
@@ -592,6 +689,10 @@ function getEventSignal(eventMemory, commodityKey) {
     eventType: bestSignal?.eventType || "Unknown",
     expectedDirection:
       bestSignal?.expectedDirection || null,
+    activeTargetedBearish,
+    activeTargetedBullish,
+    blockingSignals,
+    youngestAgeMinutes,
     signals
   };
 }

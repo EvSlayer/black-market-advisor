@@ -33,8 +33,9 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   const currentByKey=Object.fromEntries(holdingValues.map(h=>[h.key,h.value||0]));
   const optionByKey=Object.fromEntries(commodityOptions.map(o=>[o.key,o]));
 
+  const eventBlocked=commodityOptions.filter(o=>o.buyBlockedByEvent);
   const eligible=commodityOptions
-    .filter(o=>o.inManualBuyZone && !o.inSellZone)
+    .filter(o=>o.actionableBuyZone && !o.inSellZone)
     .sort((a,b)=> (b.score-a.score) || (b.upsidePct-a.upsidePct));
 
   // Loss protection: do not dump an underwater position merely to chase the newest
@@ -69,13 +70,50 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
     used+=pct;
   }
 
+  // A targeted bearish event blocks NEW buying, but it does not automatically
+  // force a panic sale of an existing position. Preserve the current amount
+  // (up to the 50% cap) unless separate sell-zone logic says otherwise.
+  const eventHoldKeys=new Set();
+  const eventNotes=[];
+  for(const h of holdingValues){
+    const o=optionByKey[h.key];
+    if(!o?.buyBlockedByEvent || o.inSellZone) continue;
+
+    eventHoldKeys.add(h.key);
+    eventNotes.push(
+      `${h.name}: no new buying while ${o.eventBlockReason||'a targeted bearish event remains active'}.`
+    );
+
+    if(allocations.some(a=>a.key===h.key)) continue;
+
+    const pct=Math.min(
+      cap,
+      Math.max(0,(h.value||0)/Math.max(1,currentValue)),
+      1-used
+    );
+    if(pct<=.0001) continue;
+
+    allocations.push({
+      key:h.key,
+      name:h.name,
+      pct,
+      dollars:currentValue*pct,
+      price:o.price||h.current,
+      target:o.target,
+      buyThreshold:o.buyThreshold,
+      sellThreshold:o.sellThreshold,
+      reason:'Hold only; active targeted bearish event blocks additional buying'
+    });
+    used+=pct;
+  }
+
   const selected=[];
   for(const o of eligible){
     if(allocations.some(a=>a.key===o.key)) continue;
     if(selected.length>=3 || used>=.99) break;
     const alloc=Math.min(cap,1-used);
     if(alloc<=0) break;
-    allocations.push({key:o.key,name:o.name,pct:alloc,dollars:currentValue*alloc,price:o.price,target:o.target,buyThreshold:o.buyThreshold,sellThreshold:o.sellThreshold,reason:o.price<=o.buyThreshold?'Inside buy zone':'Best qualifying opportunity'});
+    allocations.push({key:o.key,name:o.name,pct:alloc,dollars:currentValue*alloc,price:o.price,target:o.target,buyThreshold:o.buyThreshold,sellThreshold:o.sellThreshold,reason:o.price<=o.buyThreshold?'Inside actionable buy zone':'Best qualifying opportunity'});
     selected.push(o);
     used+=alloc;
   }
@@ -86,7 +124,22 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   }
 
   const cashPct=Math.max(0,1-used);
-  if(cashPct>.0001) allocations.push({key:'__cash',name:'Cash',pct:cashPct,dollars:currentValue*cashPct,reason:eligible.length<3?'No additional commodity meets its buy threshold':'50% cap leaves a reserve'});
+  if(cashPct>.0001){
+    const blockedNames=eventBlocked.map(o=>o.name).join(', ');
+    const cashReason=eventBlocked.length
+      ? `${blockedNames} excluded from new buys while targeted bearish event risk remains active`
+      : eligible.length<3
+        ? 'No additional commodity meets its actionable buy threshold'
+        : '50% cap leaves a reserve';
+
+    allocations.push({
+      key:'__cash',
+      name:'Cash',
+      pct:cashPct,
+      dollars:currentValue*cashPct,
+      reason:cashReason
+    });
+  }
   const targetByKey=Object.fromEntries(allocations.map(a=>[a.key,a.dollars]));
   let trades=[];
   for(const h of holdingValues){
@@ -95,6 +148,7 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
     if(diff>currentValue*tolerance){
       const atLoss=!!(h.avgBuy && h.current && h.current<h.avgBuy);
       if(atLoss && protectedLossKeys.has(h.key)) continue;
+      if(eventHoldKeys.has(h.key) && target>0) continue;
       trades.push({action:target>0?'SELL DOWN':'SELL',name:h.name,dollars:diff,key:h.key,atLoss});
     }
   }
@@ -151,5 +205,5 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   if(selected.length && (nearPlan || !meaningfulRebalance)) headline='HOLD CURRENT MIX';
   else if(selected.length && actionableTradeBudget>0) headline='REBALANCE PORTFOLIO';
   else if(selected.length) headline='HOLD CURRENT MIX';
-  return {cap,allocations,trades,candidateTrades,recommendedTrades,selected,eligibleCount:eligible.length,cashPct,nearPlan,headline,tradesRemaining,tradeReserve,actionableTradeBudget,overBudget,deferredTrades,projectedCurrent,projectedPlan,projectedImprovement,improvementPct,gainPerTrade,meaningfulRebalance,requiredOverallPct,requiredGainPerTradePct,requiredGainPerTrade,opportunityCostDecision,protectedLossKeys:[...protectedLossKeys],lossNotes};
+  return {cap,allocations,trades,candidateTrades,recommendedTrades,selected,eligibleCount:eligible.length,cashPct,nearPlan,headline,tradesRemaining,tradeReserve,actionableTradeBudget,overBudget,deferredTrades,projectedCurrent,projectedPlan,projectedImprovement,improvementPct,gainPerTrade,meaningfulRebalance,requiredOverallPct,requiredGainPerTradePct,requiredGainPerTrade,opportunityCostDecision,protectedLossKeys:[...protectedLossKeys],lossNotes,eventBlocked,eventHoldKeys:[...eventHoldKeys],eventNotes};
 }

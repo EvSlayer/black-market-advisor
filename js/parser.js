@@ -184,14 +184,38 @@ function parseBlackMarket(html){
     }
   });
 
-  doc.querySelectorAll('.bm-portfolio table tr').forEach(row=>{
+  // `.bm-portfolio` contains both the holdings table and the Recent Trades
+  // table. Select the actual holdings table by its headers so BUY/SELL rows can
+  // never be mistaken for commodities.
+  const portfolioTables=[...doc.querySelectorAll('.bm-portfolio table')];
+  const portfolioTable=portfolioTables.find(table=>{
+    const headers=[...table.querySelectorAll('tr:first-child th')]
+      .map(cell=>cell.textContent.replace(/\s+/g,' ').trim().toLowerCase());
+    return headers.includes('commodity')
+      && headers.includes('qty')
+      && headers.some(value=>value==='avg buy'||value==='average buy')
+      && headers.includes('current')
+      && headers.includes('value');
+  })||portfolioTables.find(table=>
+    /Commodity\s*Qty\s*(?:Avg|Average) Buy\s*Current\s*Value/i.test(
+      table.innerText.replace(/\s+/g,' ')
+    )
+  )||null;
+
+  const validCommodityKeys=new Set(
+    (typeof COMMODITIES!=='undefined' ? COMMODITIES : []).map(([key])=>key)
+  );
+
+  portfolioTable?.querySelectorAll('tr').forEach(row=>{
     const cells=[...row.querySelectorAll('td')].map(cell=>cell.textContent.trim());
     if(cells.length<5||/^(cash|total)$/i.test(cells[0])) return;
 
     const key=keyForName(cells[0]);
+    if(!key || (validCommodityKeys.size && !validCommodityKeys.has(key))) return;
+
     const detail={
       key,
-      name:cells[0],
+      name:nameFor(key)||cells[0],
       qty:cleanNum(cells[1]),
       avgBuy:cleanNum(cells[2]),
       current:cleanNum(cells[3]),
@@ -233,7 +257,7 @@ function parseBlackMarket(html){
   );
 
   const totalPortfolio=(()=>{
-    const totalRow=[...doc.querySelectorAll('.bm-portfolio table tr')].find(row=>
+    const totalRow=[...(portfolioTable?.querySelectorAll('tr')||[])].find(row=>
       /^Total$/i.test(row.querySelector('td')?.textContent.trim()||'')
     );
 

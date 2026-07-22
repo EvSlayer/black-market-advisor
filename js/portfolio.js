@@ -1,3 +1,49 @@
+const PURCHASE_EXCLUSIONS_STORAGE_KEY='bm_purchase_exclusions_v1';
+
+function normalizePurchaseExclusionKeys(keys){
+  const allowed=new Set(
+    (typeof COMMODITIES!=='undefined' && Array.isArray(COMMODITIES))
+      ? COMMODITIES.map(([key])=>key)
+      : []
+  );
+
+  return [...new Set((keys||[])
+    .map(String)
+    .filter(key=>!allowed.size || allowed.has(key))
+  )];
+}
+
+function loadPurchaseExclusions(){
+  try{
+    const parsed=JSON.parse(localStorage.getItem(PURCHASE_EXCLUSIONS_STORAGE_KEY)||'[]');
+    return normalizePurchaseExclusionKeys(Array.isArray(parsed)?parsed:[]);
+  }catch(error){
+    return [];
+  }
+}
+
+function savePurchaseExclusions(keys){
+  const normalized=normalizePurchaseExclusionKeys(keys);
+  localStorage.setItem(PURCHASE_EXCLUSIONS_STORAGE_KEY,JSON.stringify(normalized));
+  return normalized;
+}
+
+function setPurchaseExclusion(key,excluded){
+  const keys=new Set(loadPurchaseExclusions());
+  if(excluded) keys.add(key);
+  else keys.delete(key);
+  return savePurchaseExclusions([...keys]);
+}
+
+function clearPurchaseExclusions(){
+  localStorage.removeItem(PURCHASE_EXCLUSIONS_STORAGE_KEY);
+  return [];
+}
+
+function purchaseExclusionNames(keys){
+  return normalizePurchaseExclusionKeys(keys).map(nameFor);
+}
+
 function makeSplitOption(a,b,currentValue,cashIfLiquidated,currentHolding){
   if(!a || !b || a.key===b.key) return null;
   const half = Math.floor(cashIfLiquidated/2);
@@ -25,7 +71,7 @@ function makeSplitOption(a,b,currentValue,cashIfLiquidated,currentHolding){
   };
 }
 
-function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues){
+function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues, config={}){
   const cap=.50, tolerance=.012;
   const tradesRemaining = Number.isFinite(data.tradesRemaining) ? data.tradesRemaining : 12;
   const tradeReserve = Math.min(3, Math.max(1, Math.floor(tradesRemaining*.25)));
@@ -33,16 +79,32 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   const currentByKey=Object.fromEntries(holdingValues.map(h=>[h.key,h.value||0]));
   const optionByKey=Object.fromEntries(commodityOptions.map(o=>[o.key,o]));
 
+  const savedExclusions=config.useSavedExclusions===false
+    ? []
+    : loadPurchaseExclusions();
+  const requestedExclusions=normalizePurchaseExclusionKeys(config.excludedKeys||[]);
+  const excludedKeys=new Set(
+    config.replaceExclusions
+      ? requestedExclusions
+      : [...savedExclusions,...requestedExclusions]
+  );
+  const excludedNames=[...excludedKeys].map(nameFor);
+
   const eventBlocked=commodityOptions.filter(o=>o.buyBlockedByEvent);
+  const userExcluded=commodityOptions.filter(o=>excludedKeys.has(o.key));
   const eligible=commodityOptions
-    .filter(o=>o.actionableBuyZone && !o.inSellZone)
+    .filter(o=>
+      o.actionableBuyZone &&
+      !o.inSellZone &&
+      !o.buyBlockedByEvent &&
+      !excludedKeys.has(o.key)
+    )
     .sort((a,b)=> (b.score-a.score) || (b.upsidePct-a.upsidePct));
 
   // Loss protection: do not dump an underwater position merely to chase the newest
   // buy-zone candidate. A loss position is preserved unless the replacement's
   // expected growth multiple is materially better or the holding itself is in a
-  // sell/danger zone. This is not treating the purchase price as magic; it is a
-  // churn-control rule designed around the 12-trades-per-day limit.
+  // sell/danger zone.
   const bestEligible=eligible[0]||null;
   const protectedLossKeys=new Set();
   const lossNotes=[];
@@ -61,50 +123,75 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
 
   const allocations=[];
   let used=0;
-  // Preserve protected loss positions first, capped at the game's 50% rule.
-  for(const h of holdingValues.filter(h=>protectedLossKeys.has(h.key)).sort((a,b)=>(b.value||0)-(a.value||0))){
-    const o=optionByKey[h.key];
-    const pct=Math.min(cap, Math.max(0,(h.value||0)/Math.max(1,currentValue)), 1-used);
-    if(pct<=.0001) continue;
-    allocations.push({key:h.key,name:h.name,pct,dollars:currentValue*pct,price:o?.price||h.current,target:o?.target,buyThreshold:o?.buyThreshold,sellThreshold:o?.sellThreshold,reason:'Protected loss position; no clearly superior replacement'});
-    used+=pct;
-  }
 
-  // A targeted bearish event blocks NEW buying, but it does not automatically
-  // force a panic sale of an existing position. Preserve the current amount
-  // (up to the 50% cap) unless separate sell-zone logic says otherwise.
-  const eventHoldKeys=new Set();
-  const eventNotes=[];
-  for(const h of holdingValues){
-    const o=optionByKey[h.key];
-    if(!o?.buyBlockedByEvent || o.inSellZone) continue;
-
-    eventHoldKeys.add(h.key);
-    eventNotes.push(
-      `${h.name}: no new buying while ${o.eventBlockReason||'a targeted bearish event remains active'}.`
-    );
-
-    if(allocations.some(a=>a.key===h.key)) continue;
-
+  const preserveHolding=(h,o,reason)=>{
+    if(allocations.some(a=>a.key===h.key)) return;
     const pct=Math.min(
       cap,
       Math.max(0,(h.value||0)/Math.max(1,currentValue)),
       1-used
     );
-    if(pct<=.0001) continue;
+    if(pct<=.0001) return;
 
     allocations.push({
       key:h.key,
       name:h.name,
       pct,
       dollars:currentValue*pct,
-      price:o.price||h.current,
-      target:o.target,
-      buyThreshold:o.buyThreshold,
-      sellThreshold:o.sellThreshold,
-      reason:'Hold only; active targeted bearish event blocks additional buying'
+      price:o?.price||h.current,
+      target:o?.target,
+      buyThreshold:o?.buyThreshold,
+      sellThreshold:o?.sellThreshold,
+      reason
     });
     used+=pct;
+  };
+
+  // Preserve protected loss positions first.
+  for(const h of holdingValues
+    .filter(h=>protectedLossKeys.has(h.key))
+    .sort((a,b)=>(b.value||0)-(a.value||0))){
+    preserveHolding(
+      h,
+      optionByKey[h.key],
+      'Protected loss position; no clearly superior replacement'
+    );
+  }
+
+  // Event blocks and user exclusions prevent NEW buying. They do not automatically
+  // force a sale of an existing holding unless separate sell-zone logic applies.
+  const eventHoldKeys=new Set();
+  const eventNotes=[];
+  const exclusionHoldKeys=new Set();
+  const exclusionNotes=[];
+
+  for(const h of holdingValues){
+    const o=optionByKey[h.key];
+    if(!o || o.inSellZone) continue;
+
+    if(o.buyBlockedByEvent){
+      eventHoldKeys.add(h.key);
+      eventNotes.push(
+        `${h.name}: no new buying while ${o.eventBlockReason||'active event risk remains unresolved'}.`
+      );
+      preserveHolding(
+        h,
+        o,
+        'Hold only; active event risk blocks additional buying'
+      );
+    }
+
+    if(excludedKeys.has(h.key)){
+      exclusionHoldKeys.add(h.key);
+      exclusionNotes.push(
+        `${h.name}: excluded from new purchases by your strategy setting.`
+      );
+      preserveHolding(
+        h,
+        o,
+        'Hold only; excluded from new purchases by user'
+      );
+    }
   }
 
   const selected=[];
@@ -113,11 +200,25 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
     if(selected.length>=3 || used>=.99) break;
     const alloc=Math.min(cap,1-used);
     if(alloc<=0) break;
-    allocations.push({key:o.key,name:o.name,pct:alloc,dollars:currentValue*alloc,price:o.price,target:o.target,buyThreshold:o.buyThreshold,sellThreshold:o.sellThreshold,reason:o.price<=o.buyThreshold?'Inside actionable buy zone':'Best qualifying opportunity'});
+
+    allocations.push({
+      key:o.key,
+      name:o.name,
+      pct:alloc,
+      dollars:currentValue*alloc,
+      price:o.price,
+      target:o.target,
+      buyThreshold:o.buyThreshold,
+      sellThreshold:o.sellThreshold,
+      reason:o.price<=o.buyThreshold
+        ? 'Inside actionable buy zone'
+        : 'Best qualifying opportunity'
+    });
     selected.push(o);
     used+=alloc;
   }
-  // Count protected holdings as selected portfolio components for display/logic.
+
+  // Count preserved holdings as selected portfolio components for display/logic.
   for(const a of allocations){
     const o=optionByKey[a.key];
     if(o && !selected.some(x=>x.key===o.key)) selected.push(o);
@@ -125,23 +226,32 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
 
   const cashPct=Math.max(0,1-used);
   if(cashPct>.0001){
-    const blockedNames=eventBlocked.map(o=>o.name).join(', ');
-    const cashReason=eventBlocked.length
-      ? `${blockedNames} excluded from new buys while targeted bearish event risk remains active`
-      : eligible.length<3
-        ? 'No additional commodity meets its actionable buy threshold'
-        : '50% cap leaves a reserve';
+    const reasons=[];
+    if(eventBlocked.length){
+      reasons.push(`${eventBlocked.map(o=>o.name).join(', ')} blocked by active event risk`);
+    }
+    if(userExcluded.length){
+      reasons.push(`${userExcluded.map(o=>o.name).join(', ')} excluded from new purchases`);
+    }
+    if(!reasons.length && eligible.length<3){
+      reasons.push('no additional commodity meets its actionable buy threshold');
+    }
+    if(!reasons.length){
+      reasons.push('the 50% commodity cap leaves a reserve');
+    }
 
     allocations.push({
       key:'__cash',
       name:'Cash',
       pct:cashPct,
       dollars:currentValue*cashPct,
-      reason:cashReason
+      reason:reasons.join('; ')
     });
   }
+
   const targetByKey=Object.fromEntries(allocations.map(a=>[a.key,a.dollars]));
   let trades=[];
+
   for(const h of holdingValues){
     const target=targetByKey[h.key]||0;
     const diff=(h.value||0)-target;
@@ -149,16 +259,34 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
       const atLoss=!!(h.avgBuy && h.current && h.current<h.avgBuy);
       if(atLoss && protectedLossKeys.has(h.key)) continue;
       if(eventHoldKeys.has(h.key) && target>0) continue;
-      trades.push({action:target>0?'SELL DOWN':'SELL',name:h.name,dollars:diff,key:h.key,atLoss});
+      if(exclusionHoldKeys.has(h.key) && target>0) continue;
+      trades.push({
+        action:target>0?'SELL DOWN':'SELL',
+        name:h.name,
+        dollars:diff,
+        key:h.key,
+        atLoss
+      });
     }
   }
+
   for(const a of allocations.filter(a=>a.key!=='__cash')){
     const have=currentByKey[a.key]||0;
     const diff=a.dollars-have;
-    if(diff>currentValue*tolerance) trades.push({action:'BUY',name:a.name,dollars:diff,key:a.key,qty:Math.floor(diff/a.price)});
+    if(diff>currentValue*tolerance){
+      // A preserved event-blocked or excluded holding may remain in the plan,
+      // but it must never generate an additional BUY.
+      if(eventHoldKeys.has(a.key) || exclusionHoldKeys.has(a.key)) continue;
+      trades.push({
+        action:'BUY',
+        name:a.name,
+        dollars:diff,
+        key:a.key,
+        qty:Math.floor(diff/a.price)
+      });
+    }
   }
 
-  // Evaluate whether the rebalance is actually worth scarce daily trades.
   const candidateTrades = trades.slice();
   const projectedCurrent = (data.cash||0) + holdingValues.reduce((sum,h)=>{
     const o=optionByKey[h.key];
@@ -173,9 +301,6 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
   const improvementPct=currentValue?projectedImprovement/currentValue:0;
   const gainPerTrade=candidateTrades.length?projectedImprovement/candidateTrades.length:0;
 
-  // Opportunity-cost test: a mathematically better portfolio is not automatically
-  // worth spending scarce trades on. The required edge rises with the number of
-  // trades consumed, while still allowing a truly exceptional switch through.
   const requiredOverallPct = Math.max(.08, candidateTrades.length*.03);
   const requiredGainPerTradePct = .04;
   const requiredGainPerTrade = currentValue*requiredGainPerTradePct;
@@ -189,21 +314,65 @@ function buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues)
       ? 'Worth the trades'
       : 'Not worth the trades yet';
 
-  // Never recommend a plan that exceeds today's available trades. Also preserve a
-  // small reserve so the advisor does not burn all 12 trades early in the day.
   const overBudget=candidateTrades.length>actionableTradeBudget;
   const deferredTrades=overBudget ? candidateTrades.slice(actionableTradeBudget) : [];
   const executableCandidateTrades=candidateTrades.slice(0,actionableTradeBudget);
   const recommendedTrades=meaningfulRebalance ? executableCandidateTrades : [];
-  // Keep `trades` as the candidate plan for backward-compatible diagnostics.
-  // Public/actionable surfaces must use `recommendedTrades`.
   trades=candidateTrades;
 
-  const currentMixDistance=allocations.reduce((s,a)=>s+Math.abs((currentByKey[a.key]||0)-a.dollars),0) + holdingValues.filter(h=>!targetByKey[h.key]).reduce((s,h)=>s+(h.value||0),0);
+  const currentMixDistance=
+    allocations.reduce(
+      (sum,a)=>sum+Math.abs((currentByKey[a.key]||0)-a.dollars),
+      0
+    ) +
+    holdingValues
+      .filter(h=>!targetByKey[h.key])
+      .reduce((sum,h)=>sum+(h.value||0),0);
   const nearPlan=currentMixDistance <= currentValue*.05;
+
   let headline='WAIT IN CASH';
   if(selected.length && (nearPlan || !meaningfulRebalance)) headline='HOLD CURRENT MIX';
   else if(selected.length && actionableTradeBudget>0) headline='REBALANCE PORTFOLIO';
   else if(selected.length) headline='HOLD CURRENT MIX';
-  return {cap,allocations,trades,candidateTrades,recommendedTrades,selected,eligibleCount:eligible.length,cashPct,nearPlan,headline,tradesRemaining,tradeReserve,actionableTradeBudget,overBudget,deferredTrades,projectedCurrent,projectedPlan,projectedImprovement,improvementPct,gainPerTrade,meaningfulRebalance,requiredOverallPct,requiredGainPerTradePct,requiredGainPerTrade,opportunityCostDecision,protectedLossKeys:[...protectedLossKeys],lossNotes,eventBlocked,eventHoldKeys:[...eventHoldKeys],eventNotes};
+
+  return {
+    cap,
+    allocations,
+    trades,
+    candidateTrades,
+    recommendedTrades,
+    selected,
+    eligible,
+    eligibleCount:eligible.length,
+    cashPct,
+    nearPlan,
+    headline,
+    tradesRemaining,
+    tradeReserve,
+    actionableTradeBudget,
+    overBudget,
+    deferredTrades,
+    projectedCurrent,
+    projectedPlan,
+    projectedImprovement,
+    improvementPct,
+    gainPerTrade,
+    meaningfulRebalance,
+    requiredOverallPct,
+    requiredGainPerTradePct,
+    requiredGainPerTrade,
+    opportunityCostDecision,
+    protectedLossKeys:[...protectedLossKeys],
+    lossNotes,
+    eventBlocked,
+    eventBlockedNames:eventBlocked.map(o=>o.name),
+    eventHoldKeys:[...eventHoldKeys],
+    eventNotes,
+    excludedKeys:[...excludedKeys],
+    excludedNames,
+    userExcluded,
+    exclusionHoldKeys:[...exclusionHoldKeys],
+    exclusionNotes,
+    hypothetical:Boolean(config.hypothetical)
+  };
 }

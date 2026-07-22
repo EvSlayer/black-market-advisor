@@ -23,9 +23,10 @@ function renderRecommendationExplanation(result) {
     why.push('Cash preserves flexibility for a better market update.');
   }
 
-  if (plan.selected?.length) {
+  const qualifying=plan.eligible?.length ? plan.eligible : plan.selected;
+  if (qualifying?.length) {
     why.push(
-      `Best qualifying opportunities: ${plan.selected
+      `Best qualifying opportunities: ${qualifying
         .map(item => item.name)
         .join(', ')}.`
     );
@@ -33,6 +34,16 @@ function renderRecommendationExplanation(result) {
 
   if (plan.lossNotes?.length) {
     why.push(...plan.lossNotes);
+  }
+
+  if (plan.eventNotes?.length) {
+    whyNot.push(...plan.eventNotes);
+  }
+
+  if (plan.excludedNames?.length) {
+    whyNot.push(
+      `Excluded from new purchases by your strategy setting: ${plan.excludedNames.join(', ')}.`
+    );
   }
 
  if (plan.trades?.length) {
@@ -54,8 +65,9 @@ function renderRecommendationExplanation(result) {
 
 
    if (plan.cashPct > 0) {
+  const cashAllocation=plan.allocations?.find(item=>item.key==='__cash');
   whyNot.push(
-    `${Math.round(plan.cashPct * 100)}% intentionally remains in cash because no additional commodities currently meet the buy criteria.`
+    `${Math.round(plan.cashPct * 100)}% intentionally remains in cash${cashAllocation?.reason?` because ${cashAllocation.reason}`:' because no additional commodities currently meet the buy criteria'}.`
   );
 }
 
@@ -473,12 +485,20 @@ const soldPositions = actionableTrades
   .map(trade => `SELL ${trade.name}`);
 
 const recommendationActions = [...allocationActions, ...soldPositions];
+const constraintNotes=[];
+if(pplan.eventBlockedNames?.length){
+  constraintNotes.push(`Event-blocked from new purchases: ${pplan.eventBlockedNames.join(', ')}`);
+}
+if(pplan.excludedNames?.length){
+  constraintNotes.push(`Excluded by you: ${pplan.excludedNames.join(', ')}`);
+}
+const constraintText=constraintNotes.length?` ${constraintNotes.join('. ')}.`:'';
 
 const recText = result.action === 'REBALANCE PORTFOLIO'
-  ? `My take: ${recommendationActions.join(', ')}. Keep any unused allocation in cash rather than forcing a weak entry.`
+  ? `My take: ${recommendationActions.join(', ')}. Keep any unused allocation in cash rather than forcing a weak entry.${constraintText}`
   : result.action === 'HOLD CURRENT MIX'
-    ? `My take: hold your current positions and make no trades right now. The candidate rebalance does not add enough expected value to justify using scarce trades.`
-    : `My take: wait in cash. Fewer than three commodities currently qualify as clean buys, so the optimizer is preserving the unused allocation.`;
+    ? `My take: hold your current positions and make no trades right now. The candidate rebalance does not add enough expected value to justify using scarce trades.${constraintText}`
+    : `My take: wait in cash. Fewer than three commodities currently qualify as clean buys, so the optimizer is preserving the unused allocation.${constraintText}`;
   
   const bestAlt = result.bestSwitch;
   const riskClass = result.risk==='Low'?'good':result.risk==='Medium'?'warn':'bad';
@@ -557,9 +577,11 @@ ${actionLabel ? `
 a.key === '__cash'
   ? result.action === 'HOLD CURRENT MIX'
     ? 'Current cash balance.'
-    : pplan.meaningfulRebalance
-      ? 'Cash reserve · Remaining allocation after recommended trades.'
-      : 'Held intentionally · No additional commodity currently qualifies for investment.'
+    : a.reason
+      ? `Held intentionally · ${a.reason}.`
+      : pplan.meaningfulRebalance
+        ? 'Cash reserve · Remaining allocation after recommended trades.'
+        : 'Held intentionally · No additional commodity currently qualifies for investment.'
       : result.action === 'HOLD CURRENT MIX'
   ? `Current price: ${fmt(a.price)} · Buy threshold: ${fmt(a.buyThreshold)}`
   : `${a.reason} · Current ${fmt(a.price)} · Buy threshold ${fmt(a.buyThreshold)}`
@@ -587,7 +609,13 @@ a.key === '__cash'
   result.action === 'REBALANCE PORTFOLIO'
     ? '<div class="good" style="margin-bottom:12px"><strong>Recommended Portfolio</strong></div>'
     : '<div class="good" style="margin-bottom:12px"><strong>Current Portfolio</strong></div>';
-  document.getElementById('portfolioPlan').innerHTML=`${planLabel}<div class="alloc-grid">${allocHtml}</div>${tradeHtml}${lossHtml}${budgetHtml}${opportunityHtml}<div class="mini" style="margin-top:12px">
+  const restrictionHtml=(pplan.excludedNames?.length||pplan.eventBlockedNames?.length)
+    ? `<div class="warn" style="margin-top:12px"><strong>Purchase restrictions:</strong><ul>${[
+        ...(pplan.excludedNames||[]).map(name=>`${name}: excluded by user`),
+        ...(pplan.eventBlockedNames||[]).map(name=>`${name}: temporarily blocked by active event risk`)
+      ].map(text=>`<li>${text}</li>`).join('')}</ul></div>`
+    : '';
+  document.getElementById('portfolioPlan').innerHTML=`${planLabel}<div class="alloc-grid">${allocHtml}</div>${tradeHtml}${lossHtml}${restrictionHtml}${budgetHtml}${opportunityHtml}<div class="mini" style="margin-top:12px">
   ${
     result.action === 'HOLD CURRENT MIX'
       ? 'The advisor recommends continuing to hold this portfolio. No rebalance currently provides enough expected benefit to justify using trades.'
@@ -635,36 +663,10 @@ a.key === '__cash'
   const dustNote = result.ignoredDust?.length ? `<tr><th>Minor holdings (&lt;${Math.round(result.majorThresholdPct*100)}%)</th><td class="num">${result.ignoredDust.map(h=>`${h.name}: ${fmt(h.value)} (${pct(result.currentValue?h.value/result.currentValue:0)})`).join('<br>')}</td></tr>` : '';
   document.getElementById('positionBox').innerHTML = `<table><tr><th>Portfolio</th><td class="num">${fmt(result.currentValue)}</td></tr><tr><th>Cash</th><td class="num">${fmt(data.cash)}</td></tr>${majorRows}${dustNote}<tr><th>Trades left</th><td class="num">${data.tradesRemaining ?? 'Unknown'}</td></tr><tr><th>Week ends in</th><td class="num">${data.timeRemaining || 'Unknown'}</td></tr></table>`;
   document.getElementById('eventsBox').innerHTML = data.events.length ? `<ul>${data.events.map(e=>{
-    
     const n = normalizeEventName(e);
     const p = result.eventMemory?.profiles?.[n];
-
-const activeEvent =
-  result.eventMemory?.active?.[n] ||
-  result.eventMemory?.profiles?.[n] ||
-  null;
-
-const classification = {
-  type:
-    activeEvent?.eventType ||
-    p?.eventType ||
-    'Unknown',
-
-  expectedDirection:
-    activeEvent?.expectedDirection ||
-    p?.expectedDirection ||
-    'Unknown',
-
-  classificationConfidence:
-    activeEvent?.classificationConfidence ??
-    p?.classificationConfidence ??
-    0
-};
-
-const typeProfile =
-  result.eventMemory?.typeProfiles?.[classification.type];
-
-   
+    const classification = classifyEvent(e);
+    const typeProfile = result.eventMemory?.typeProfiles?.[classification.type];
     const occurrenceCount = p?.occurrences || 1;
     const rows = [];
 

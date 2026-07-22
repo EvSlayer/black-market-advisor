@@ -1,4 +1,4 @@
-window.BM_QA_VERSION='v10-dropdown-ranking';
+window.BM_QA_VERSION='v14-event-strategy-exclusions';
 const ADVISOR_ALIASES = {
   counterfeit_bills:['counterfeit bills','counterfeit bill','counterfeit cash','fake cash','fake money','bills','counterfeit'],
   stolen_electronics:['stolen electronics','electronics','electronic'],
@@ -52,7 +52,9 @@ function recentTrend(o,points=4){
 }
 function entryLabel(o){
   if(!o) return 'unknown';
-  if(o.inManualBuyZone) return 'inside its buy zone';
+  if(o.purchaseExcluded) return 'excluded from new purchases';
+  if(o.buyBlockedByEvent) return 'temporarily blocked by active event risk';
+  if(o.inManualBuyZone) return 'inside its actionable buy zone';
   if(isValidMoney(o.buyThreshold) && o.price<=o.buyThreshold*1.15) return 'near its buy zone';
   return 'above its buy zone';
 }
@@ -98,22 +100,32 @@ function capAnswer(result){
   };
 }
 function explainCommodity(o,result,q){
+  if(!o) return null;
   const trend=recentTrend(o); const perc=pricePercentile(o); const rank=rankOfOption(result,o.key);
   const capText=`${Math.round(advisorCommodityCapPct(result)*100)}%`;
   const upside=o.target&&o.price?o.target/o.price-1:0;
   const expectedAtTarget=result?.currentValue && o.price ? result.currentValue*(o.target/o.price) : 0;
   const event=o.eventSignal;
-  const eventText=event?.confidence>=.45 ? ` Event history currently reads ${event.effect>=0?'bullish':'bearish'} (${pct(Math.abs(event.effect))}) with ${Math.round(event.confidence*100)}% evidence confidence.` : ' Event direction is still being learned and is not driving the recommendation strongly.';
+  const eventText=o.buyBlockedByEvent
+    ? ` New buying is blocked because ${o.eventBlockReason||'active event risk remains unresolved'}.`
+    : event?.confidence>=.45
+      ? ` Event history currently reads ${event.effect>=0?'bullish':'bearish'} (${pct(Math.abs(event.effect))}) with ${Math.round(event.confidence*100)}% evidence confidence.`
+      : ' Event direction is still being learned and is not driving the recommendation strongly.';
   const whyBuy = /(why|really|for real|worth|invest|buy|going in|go in)/.test(q);
   const falling = /(trend|trending|fall|falling|down|dropping|drop more|lower)/.test(q);
   const worst = /(worst|weak|yield|return|underperform)/.test(q);
   let title=`Assessment: ${o.name}`;
   let body='';
-  if(worst){
+
+  if(o.purchaseExcluded){
+    body=`${o.name} is excluded from new purchases by your saved strategy setting. The advisor may still analyze an existing holding, but it will not allocate additional money to it until the exclusion is cleared.`;
+  }else if(o.buyBlockedByEvent){
+    body=`Do not open or add to ${o.name} right now. ${o.eventBlockReason||'Active event risk remains unresolved'}. A low price alone is not a clean entry while the event is still listed${trend.label==='falling'?' and the recent trend is falling':''}.`;
+  }else if(worst){
     body=`Past yield alone is not the reason to buy it. The advisor is evaluating the entry now: ${o.name} is ${entryLabel(o)}, ranks #${rank||'—'} by the current model, and has ${pct(upside)} upside to the estimated target. A historically weak commodity should only receive allocation after stronger qualifying opportunities reach the ${capText} cap—or if its current entry is unusually cheap.`;
-  } else if(falling){
+  }else if(falling){
     body=`Your concern is valid. ${o.name} is ${trend.label} over the latest captured points (${pct(trend.pct)}), and the current price is around the ${Math.round(perc*100)}th percentile of saved history. ${entryLabel(o)}. The advisor should not buy merely because the target is high; the entry threshold, event signal, and trade cost must still justify it.${whyBuy && !o.inManualBuyZone?' At this price I would treat it as a watch, not an automatic buy.':''}`;
-  } else {
+  }else{
     body=`The case is based on the current entry, not a promise about the next tick. ${o.name} is ${entryLabel(o)}, at ${fmt(o.price)} versus a buy threshold of ${fmt(o.buyThreshold)}, and has an estimated target of ${fmt(o.target)} (${pct(upside)} upside). It ranks #${rank||'—'} among commodities. ${expectedAtTarget?`As an uncapped thought experiment, full exposure at this price would have a target-equivalent value near ${fmt(expectedAtTarget)}. That is not a recommendation: the actionable portfolio remains limited to ${capText} per commodity and must pass the trade-cost test.`:''}`;
   }
   const evidence=`Current ${fmt(o.price)} · Buy threshold ${fmt(o.buyThreshold)} · Sell threshold ${fmt(o.sellThreshold)} · Historical percentile ${Math.round(perc*100)}th · Recent trend ${trend.label} ${pct(trend.pct)}.${eventText}`;
@@ -123,11 +135,44 @@ function compareCommodities(a,b,result){
   const ra=rankOfOption(result,a.key), rb=rankOfOption(result,b.key);
   const au=a.target/a.price-1, bu=b.target/b.price-1;
   const aZone=entryLabel(a), bZone=entryLabel(b);
-  const better=(a.score>=b.score?a:b), other=better===a?b:a;
-  return {title:`${a.name} vs ${b.name}`,body:`Right now the model prefers ${better.name}, but the reason matters: ${a.name} is ${aZone} with ${pct(au)} target upside and ranks #${ra}; ${b.name} is ${bZone} with ${pct(bu)} target upside and ranks #${rb}. The stronger choice is not automatically the one with the larger theoretical target—it should also have the cleaner entry, stronger evidence, and enough expected edge to justify the trades.`,evidence:`Scores: ${a.name} ${Math.round(a.score)}, ${b.name} ${Math.round(b.score)}. Current prices: ${fmt(a.price)} vs ${fmt(b.price)}.`};
+  const buyable=[a,b].filter(o=>!o.purchaseExcluded&&!o.buyBlockedByEvent);
+  const better=buyable.length
+    ? buyable.sort((x,y)=>y.score-x.score)[0]
+    : (a.score>=b.score?a:b);
+  const restrictionText=[a,b]
+    .filter(o=>o.purchaseExcluded||o.buyBlockedByEvent)
+    .map(o=>`${o.name} is ${entryLabel(o)}`)
+    .join('; ');
+  return {
+    title:`${a.name} vs ${b.name}`,
+    body:`Right now the model prefers ${better.name} among the currently actionable choices. ${a.name} is ${aZone} with ${pct(au)} target upside and ranks #${ra}; ${b.name} is ${bZone} with ${pct(bu)} target upside and ranks #${rb}. ${restrictionText?`Important restriction: ${restrictionText}. `:''}The stronger choice is not automatically the one with the larger theoretical target—it must also be buyable, have a clean entry, and offer enough expected edge to justify the trades.`,
+    evidence:`Scores: ${a.name} ${Math.round(a.score)}, ${b.name} ${Math.round(b.score)}. Current prices: ${fmt(a.price)} vs ${fmt(b.price)}.`
+  };
+}
+function advisorEventTargetKeys(eventName){
+  if(typeof eventTargetKeys==='function'){
+    const keys=eventTargetKeys(eventName);
+    if(Array.isArray(keys)) return keys;
+  }
+  if(typeof eventTargetKey==='function'){
+    const key=eventTargetKey(eventName);
+    if(key) return [key];
+  }
+  return [];
 }
 function matchActiveEventFromQuestion(q,result,data){
-  const active=(result?.eventMemory?.rawEvents||[]).map(e=>({name:e.name,raw:e.raw,ageMinutes:e.ageMinutes||0}));
+  const active=(result?.eventMemory?.rawEvents||[]).map(e=>({
+    name:e.name,
+    raw:e.raw,
+    ageMinutes:e.ageMinutes||0,
+    activeCopies:e.activeCopies||1,
+    copyAges:e.copyAges||[e.ageMinutes||0],
+    targetKey:e.targetKey||null,
+    targetKeys:e.targetKeys||advisorEventTargetKeys(e.name),
+    eventType:e.eventType,
+    expectedDirection:e.expectedDirection,
+    classificationConfidence:e.classificationConfidence
+  }));
   if(!active.length) return null;
   const words=x=>normalizeQuestion(x).split(/\s+/).filter(w=>w.length>=4 && !['event','ago','hits','street','streets','affected'].includes(w));
   let best=null,bestScore=0;
@@ -154,40 +199,61 @@ function eventVersusWaitAnswer(q,entities,result,data){
   const ev=matchActiveEventFromQuestion(q,result,data);
   const o=entities.length ? optionForKey(result,entities[0].key) : null;
   if(!ev || !o) return null;
+
   const profile=result.eventMemory?.profiles?.[ev.name];
   const stat=closestEventStat(profile,o.key,ev.ageMinutes);
   const trend=recentTrend(o,5);
   const normalThreshold=o.baseBuyThreshold||o.buyThreshold;
   const adjustedThreshold=o.buyThreshold;
-  const affected=eventTargetKey(ev.name)===o.key || new RegExp(o.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i').test(ev.name);
+  const targetKeys=ev.targetKeys?.length?ev.targetKeys:advisorEventTargetKeys(ev.name);
+  const affected=targetKeys.includes(o.key) || new RegExp(o.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i').test(ev.name);
   const reliableBearish=!!(stat && stat.n>=2 && stat.avg<-.02 && stat.consistency>=.65);
   const reliableBullish=!!(stat && stat.n>=2 && stat.avg>.02 && stat.consistency>=.65);
   const stillFalling=trend.pct<-.03;
-  const insideNormal=o.price<=normalThreshold;
   const insideAdjusted=o.price<=adjustedThreshold;
-  const unaffected=(result.commodityOptions||[]).filter(x=>x.key!==o.key && x.inManualBuyZone && !(x.eventSignal?.confidence>=.45 && x.eventSignal.effect<0)).sort((a,b)=>b.score-a.score);
+  const unaffected=(result.commodityOptions||[])
+    .filter(x=>
+      x.key!==o.key &&
+      x.inManualBuyZone &&
+      !x.purchaseExcluded &&
+      !x.buyBlockedByEvent
+    )
+    .sort((a,b)=>b.score-a.score);
   const alt=unaffected[0];
   let verdict,reason;
-  if(reliableBearish && (!insideAdjusted || stillFalling)){
-    verdict='Wait or buy only a partial allocation.';
-    reason=`The event has a repeatable bearish record for ${o.name}, and ${stillFalling?'the latest captured movement is still falling':'the event-adjusted entry has not become compelling enough'}. Reaching the normal buy threshold alone is not sufficient during a persistent negative event.`;
-  } else if(!stat || stat.n<2){
-    verdict=insideAdjusted && !stillFalling?'A cautious partial buy is defensible.':'Wait for more event evidence.';
-    reason=`This event does not yet have enough independent occurrences to estimate its full effect reliably. ${stillFalling?'The price is still moving down, so waiting avoids trying to catch a falling market.':'The current entry is attractive, but uncertainty remains high.'}`;
-  } else if(reliableBullish){
-    verdict=insideAdjusted?'Buying now is supported by both price and event history.':'Watch rather than chase.';
+
+  if(o.purchaseExcluded){
+    verdict='DO NOT BUY';
+    reason=`${o.name} is excluded from new purchases by your saved strategy setting.`;
+  }else if(o.buyBlockedByEvent){
+    verdict='WAIT — NEW BUYING IS BLOCKED';
+    reason=`${o.eventBlockReason||'Active event risk remains unresolved'}. Reaching a price threshold alone is not enough while the event remains listed.`;
+  }else if(reliableBearish && (!insideAdjusted || stillFalling)){
+    verdict='WAIT OR USE ONLY A SMALL STARTER POSITION';
+    reason=`The event has a repeatable bearish record for ${o.name}, and ${stillFalling?'the latest captured movement is still falling':'the event-adjusted entry has not become compelling enough'}.`;
+  }else if(!stat || stat.n<2){
+    verdict=insideAdjusted && !stillFalling?'A CAUTIOUS PARTIAL BUY IS DEFENSIBLE':'WAIT FOR MORE EVIDENCE';
+    reason=`This event does not yet have enough independent completed occurrences to estimate its full effect reliably. ${stillFalling?'The price is still moving down, so waiting avoids trying to catch a falling market.':'The current entry may be attractive, but uncertainty remains high.'}`;
+  }else if(reliableBullish){
+    verdict=insideAdjusted?'BUYING IS SUPPORTED':'WATCH RATHER THAN CHASE';
     reason=`The event history has been bullish for ${o.name}, but the buy threshold still controls whether the entry is clean.`;
-  } else {
-    verdict=insideAdjusted?'Buy zone reached, but use normal trade discipline.':'Wait for the event-adjusted threshold.';
+  }else{
+    verdict=insideAdjusted?'BUY ZONE REACHED — USE NORMAL DISCIPLINE':'WAIT FOR THE EVENT-ADJUSTED THRESHOLD';
     reason='The event effect is mixed or weak, so it should not override the normal entry rules.';
   }
-  const altText=alt?` The strongest currently qualifying alternative without a meaningful bearish event signal is ${alt.name} at ${fmt(alt.price)}.`:' No clearly superior unaffected commodity is currently inside its buy zone.';
-  const age=ev.ageMinutes>=1440?`${(ev.ageMinutes/1440).toFixed(1)} days`:ev.ageMinutes>=60?`${(ev.ageMinutes/60).toFixed(ev.ageMinutes%60?1:0)} hours`:`${ev.ageMinutes} minutes`;
-  const historical=stat?`${stat.avg>=0?'+' : ''}${pct(stat.avg)} over ${stat.window>=60?Math.round(stat.window/60)+'h':stat.window+'m'} across ${stat.n} occurrence${stat.n===1?'':'s'} (${Math.round(stat.consistency*100)}% directional consistency)`:'not enough completed history';
+
+  const altText=alt
+    ? ` The strongest currently actionable alternative is ${alt.name} at ${fmt(alt.price)}.`
+    : ' No clearly superior unaffected commodity is currently inside its actionable buy zone.';
+  const ages=(ev.copyAges||[ev.ageMinutes||0]).map(formatEventAge).join(', ');
+  const historical=stat
+    ? `${stat.avg>=0?'+' : ''}${pct(stat.avg)} over ${stat.window>=60?Math.round(stat.window/60)+'h':stat.window+'m'} across ${stat.n} occurrence${stat.n===1?'':'s'} (${Math.round(stat.consistency*100)}% directional consistency)`
+    : 'not enough completed history';
+
   return {
     title:`${o.name}: buy now or wait for “${ev.name}”?`,
-    body:`<strong>${verdict}</strong> ${reason}${altText}`,
-    evidence:`Event age ${age} · Current ${fmt(o.price)} · Normal buy threshold ${fmt(normalThreshold)} · Event-adjusted threshold ${fmt(adjustedThreshold)} · Recent movement ${pct(trend.pct)} · Event history ${historical}${affected?' · Event explicitly targets this commodity':''}.`
+    body:`<strong>${verdict}.</strong> ${reason}${altText}`,
+    evidence:`Active copies ${ev.activeCopies||1} · Displayed ages ${ages} · Current ${fmt(o.price)} · Normal buy threshold ${fmt(normalThreshold)} · Event-adjusted threshold ${fmt(adjustedThreshold)} · Recent movement ${pct(trend.pct)} · Event history ${historical}${affected?' · Event targets or strongly implies this commodity':''}.`
   };
 }
 
@@ -754,6 +820,17 @@ function advisorKnowledgeAnswer(q,data,result){
     };
   }
 
+  if(/purchase exclusion|exclude.*commodity|excluded from new purchases|exclusion checkbox/.test(q)){
+    const excluded=typeof loadPurchaseExclusions==='function'
+      ? loadPurchaseExclusions()
+      : [];
+    return {
+      title:'Purchase exclusions',
+      body:`Purchase exclusions remove selected commodities from new allocations without automatically selling an existing holding. ${excluded.length?`Currently excluded: ${excluded.map(nameFor).join(', ')}.`:'No commodities are currently excluded.'} You can also ask a temporary what-if question such as “Excluding Stolen Art, what is my best strategy?”`,
+      evidence:'Saved exclusions persist in this browser. Hypothetical exclusions in a question do not change the saved settings.'
+    };
+  }
+
   if(/ask the advisor|help mode|what can (you|the advisor) answer|how do i use.*advisor/.test(q)){
     return {
       title:'Ask the Advisor help',
@@ -775,78 +852,111 @@ function specificEventKnowledgeAnswer(q,result,data){
   const eventWords=normalizeQuestion(event.name)
     .split(/\s+/)
     .filter(w=>w.length>=4 && !['event','ago','hits','street','streets','affected'].includes(w));
-
   const explicitMatch=eventWords.some(w=>q.includes(w));
   const asksWhat=/what does|what is|what happens|what will|how does|how will|explain|tell me about|meaning|effect|impact|likely affect|affect|do\??$/.test(q);
   if(!explicitMatch || !asksWhat) return null;
 
-  const normalizedEventWords=eventWords.map(normalizeQuestion).filter(Boolean);
-  const rawCopies=rawEvents.filter(item=>{
-    const candidate=normalizeQuestion(item?.name||item?.raw||'');
-    return normalizedEventWords.length && normalizedEventWords.every(word=>candidate.includes(word));
-  }).length;
-  const pageCopies=(data?.events||[]).filter(item=>{
-    const candidate=normalizeQuestion(item);
-    return normalizedEventWords.length && normalizedEventWords.every(word=>candidate.includes(word));
-  }).length;
-  const activeCopies=Math.max(1,rawCopies,pageCopies);
+  const pageMatches=(data?.events||[]).filter(raw=>{
+    const candidate=normalizeQuestion(normalizeEventName(raw));
+    return eventWords.length && eventWords.every(word=>candidate.includes(word));
+  });
+  const pageAges=pageMatches.map(parseEventAgeMinutes).filter(Number.isFinite);
+  const activeCopies=Math.max(
+    1,
+    Number(event.activeCopies||0),
+    pageMatches.length
+  );
+  const copyAges=(event.copyAges?.length?event.copyAges:pageAges.length?pageAges:[event.ageMinutes||0])
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((a,b)=>a-b);
 
   const activeProfile=result?.eventMemory?.active?.[event.name]||
     result?.eventMemory?.profiles?.[event.name]||
     null;
-
   const learnedType=activeProfile?.eventType||event.eventType||null;
   const learnedExpected=activeProfile?.expectedDirection||event.expectedDirection||null;
-  const directTargetKey=eventTargetKey(event.name);
   const inferred=inferEventReasoning(event.name);
-  const occurrenceCount=activeProfile?.occurrences||0;
-  const classificationConfidence=
-    activeProfile?.classificationConfidence ?? event.classificationConfidence ?? 0;
-
-  const likelyKeys=directTargetKey
-    ? [directTargetKey,...inferred.commodities.filter(k=>k!==directTargetKey)]
-    : inferred.commodities;
-  const likelyNames=likelyKeys.map(nameFor).filter(Boolean);
-  const typeText=[learnedType,...inferred.types].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(' / ') || 'Unclassified';
-
-  let measuredText='';
+  const targetKeys=event.targetKeys?.length
+    ? event.targetKeys
+    : advisorEventTargetKeys(event.name);
+  const likelyKeys=[
+    ...targetKeys,
+    ...inferred.commodities.filter(key=>!targetKeys.includes(key))
+  ];
+  const primaryKey=likelyKeys[0]||null;
+  const primaryOpt=primaryKey?optionForKey(result,primaryKey):null;
+  const primaryName=primaryOpt?.name||(primaryKey?nameFor(primaryKey):null);
   const profile=result?.eventMemory?.profiles?.[event.name];
-  if(profile?.summary){
-    const ranked=(result?.commodityOptions||[]).map(o=>{
-      const stat=closestEventStat(profile,o.key,event.ageMinutes);
-      return stat ? {name:o.name,...stat} : null;
-    }).filter(Boolean).sort((a,b)=>Math.abs(b.avg)-Math.abs(a.avg)).slice(0,3);
+  const stat=primaryKey?closestEventStat(profile,primaryKey,event.ageMinutes):null;
+  const trend=primaryOpt?recentTrend(primaryOpt,6):null;
+  const classificationConfidence=
+    activeProfile?.classificationConfidence ??
+    event.classificationConfidence ??
+    0;
+  const occurrenceCount=activeProfile?.occurrences||0;
 
-    if(ranked.length){
-      measuredText=` The strongest measured responses so far are ${ranked.map(x=>`${x.name} ${x.avg>=0?'+':''}${pct(x.avg)} over ${x.window>=60?Math.round(x.window/60)+'h':x.window+'m'} (${x.n} occurrence${x.n===1?'':'s'})`).join('; ')}.`;
-    }
+  const direction=
+    learnedExpected==='down'?'downward':
+    learnedExpected==='up'?'upward':
+    stat?.avg<-.02?'downward':
+    stat?.avg>.02?'upward':
+    'uncertain';
+
+  let decision='WATCH';
+  let decisionReason='The event does not identify one market strongly enough for a direct trading instruction.';
+
+  if(primaryOpt?.purchaseExcluded){
+    decision='DO NOT BUY';
+    decisionReason=`${primaryOpt.name} is excluded from new purchases by your saved strategy setting.`;
+  }else if(primaryOpt?.buyBlockedByEvent){
+    decision='WAIT';
+    decisionReason=`New buying in ${primaryOpt.name} is temporarily blocked because ${primaryOpt.eventBlockReason||'active event risk remains unresolved'}.`;
+  }else if(primaryOpt && learnedExpected==='down'){
+    decision='WAIT';
+    decisionReason=`The event points to continued downward pressure on ${primaryOpt.name}; a low price alone is not enough while the event remains active.`;
+  }else if(primaryOpt && activeCopies>=2 && trend?.pct<-.02){
+    decision='WAIT';
+    decisionReason=`There are ${activeCopies} active copies and ${primaryOpt.name} is still falling, so the advisor should wait for stabilization rather than catch the decline.`;
+  }else if(primaryOpt?.inManualBuyZone && trend?.pct>=-.02){
+    decision='CAUTIOUS ENTRY POSSIBLE';
+    decisionReason=`${primaryOpt.name} is inside its actionable buy zone and is not currently falling sharply, but the event still adds uncertainty.`;
+  }else if(primaryOpt){
+    decision='WATCH';
+    decisionReason=`${primaryOpt.name} is not currently an authorized buy under the event-aware portfolio rules.`;
   }
 
-  const learnedDirectionText=
-    learnedExpected==='up' || String(learnedExpected).toLowerCase()==='bullish'
-      ? 'The rule table currently expects upward pressure.'
-      : learnedExpected==='down' || String(learnedExpected).toLowerCase()==='bearish'
-        ? 'The rule table currently expects downward pressure.'
-        : '';
+  const alternative=(result?.commodityOptions||[])
+    .filter(o=>
+      o.key!==primaryKey &&
+      o.inManualBuyZone &&
+      !o.purchaseExcluded &&
+      !o.buyBlockedByEvent &&
+      !o.inSellZone
+    )
+    .sort((a,b)=>b.score-a.score)[0]||null;
 
-  const commodityText=likelyNames.length
-    ? `The commodities most plausibly exposed are <strong>${likelyNames.join(', ')}</strong>.`
-    : 'No commodity can be identified confidently from the wording alone.';
-
-  const confidencePlain=occurrenceCount>=3
-    ? 'Repeated observations are beginning to matter more than the wording.'
-    : occurrenceCount>=1
-      ? 'History is still thin, so this remains a working interpretation.'
-      : 'This is economic reasoning only until captured price behavior confirms or contradicts it.';
-
-  const duplicateText=activeCopies>1
-    ? ` The current snapshot contains <strong>${activeCopies} active copies</strong> of this event. The advisor treats that as greater event exposure, but it does not assume the price effect doubles unless captured history demonstrates a stacking effect.`
+  const typeText=[learnedType,...inferred.types]
+    .filter(Boolean)
+    .filter((value,index,array)=>array.indexOf(value)===index)
+    .join(' / ') || 'Unclassified';
+  const agesText=copyAges.map(formatEventAge).join(', ');
+  const measuredText=primaryOpt
+    ? stat
+      ? `${primaryOpt.name} has averaged ${stat.avg>=0?'+':''}${pct(stat.avg)} over the closest ${stat.window>=60?Math.round(stat.window/60)+'h':stat.window+'m'} tracked window across ${stat.n} occurrence${stat.n===1?'':'s'}, with ${Math.round(stat.consistency*100)}% directional consistency.`
+      : `There is not yet enough completed event history to quantify the effect on ${primaryOpt.name} reliably.`
+    : 'No single primary commodity could be identified confidently.';
+  const currentText=primaryOpt
+    ? `Current ${primaryOpt.name}: <strong>${fmt(primaryOpt.price)}</strong> · Buy threshold: <strong>${fmt(primaryOpt.buyThreshold)}</strong> · Recent trend: <strong>${trend.label} ${pct(trend.pct)}</strong>.`
     : '';
+  const alternativeText=alternative
+    ? ` Best currently actionable alternative: <strong>${alternative.name}</strong> at ${fmt(alternative.price)}.`
+    : ' No unaffected alternative currently qualifies strongly enough to force a purchase.';
 
   return {
-    title:event.name,
-    body:`This looks like a <strong>${typeText}</strong> event.${duplicateText} ${inferred.rationale} ${inferred.direction} ${learnedDirectionText} ${commodityText} ${confidencePlain}${measuredText}`,
-    evidence:`Active copies detected: ${activeCopies} · Displayed age: ${formatEventAge(event.ageMinutes)} · Tracked historical occurrences: ${occurrenceCount} · Classification confidence: ${Math.round(classificationConfidence*100)}%. Rule-based reasoning, simultaneous copies, and measured history are kept separate.`
+    title:`${event.name}: current trading impact`,
+    body:`<strong>Primary market:</strong> ${primaryName||'not confidently identified'}<br><strong>Likely pressure:</strong> ${direction}<br><strong>Current decision:</strong> ${decision}<br>${decisionReason}<br><br>${currentText}<br>${measuredText}${alternativeText}`,
+    evidence:`Event type ${typeText} · Active copies ${activeCopies} · Displayed ages ${agesText||formatEventAge(event.ageMinutes)} · Tracked historical occurrences ${occurrenceCount} · Classification confidence ${Math.round(classificationConfidence*100)}%. Multiple copies increase caution, but the advisor does not assume the effect multiplies exactly.`
   };
 }
 
@@ -876,6 +986,7 @@ function detectAdvisorCategory(q,entities=[]){
   if(/average|mean|median|percentile|volatil|standard deviation|largest.*(?:rise|fall|move|change)|biggest.*(?:rise|fall|move|change)|statistics?|stats?|most expensive|cheapest|highest average|lowest average/.test(q)) return 'statistics';
   if(/highest|lowest|all[ -]?time|record high|record low|price history|ever been|when was|last time|how far back|how much history|been above|been below/.test(q)) return 'history';
   if(entities.length>=2 || /\bvs\b|versus|compare|which is better|better between/.test(q)) return 'comparison';
+  if(/\bexclude\b|\bexcluding\b|\bwithout\b|do not buy|don't buy|remove.*(?:option|candidate)|alternative.*strategy/.test(q)) return 'portfolio';
   if(/portfolio|allocation|cash|cap|33%|50%|trade|split|diversif|current mix|recommended plan/.test(q)) return 'portfolio';
   if(entities.length) return 'entry';
   return 'portfolio';
@@ -910,7 +1021,7 @@ function sourceAndTargetEntities(q,entities,data,result){
   if(!source && target) source=dominant;
   if(!target && source){
     const best=(result?.commodityOptions||[])
-      .filter(o=>o.key!==source.key)
+      .filter(o=>o.key!==source.key && !o.purchaseExcluded && !o.buyBlockedByEvent)
       .sort((a,b)=>b.score-a.score)[0];
     if(best) target={key:best.key,name:best.name,index:-1};
   }
@@ -968,6 +1079,12 @@ function switchDecisionAnswer(q,entities,data,result){
   if(!holding){
     verdict='NO ACTION';
     reason=`The captured portfolio does not show ${source.name} as a current holding, so there is nothing to sell from that position.`;
+  }else if(targetOpt.purchaseExcluded){
+    verdict='NO — DESTINATION EXCLUDED';
+    reason=`${target.name} is excluded from new purchases by your saved strategy setting. Clear the exclusion or ask for an alternative strategy without it.`;
+  }else if(targetOpt.buyBlockedByEvent){
+    verdict='WAIT — EVENT RISK BLOCKS THE BUY';
+    reason=`${targetOpt.eventBlockReason||'Active event risk remains unresolved for the destination'}. Do not sell the source merely to move into a temporarily blocked market.`;
   }else if(recommendedSell && recommendedBuy){
     verdict='YES — SWITCH NOW';
     reason=`The authoritative capped portfolio plan explicitly recommends selling ${source.name} and buying ${target.name}. The candidate clears the opportunity-cost and trade-budget tests.`;
@@ -1012,7 +1129,7 @@ function exitStrategyAnswer(q,entities,data,result){
   const profitPct=h?.avgBuy>0 ? o.price/h.avgBuy-1 : null;
   const bearish=!!(o.eventSignal?.confidence>=.45 && o.eventSignal.effect<0);
   const replacement=(result?.commodityOptions||[])
-    .filter(x=>x.key!==o.key && x.inManualBuyZone && !x.inSellZone)
+    .filter(x=>x.key!==o.key && x.inManualBuyZone && !x.inSellZone && !x.purchaseExcluded && !x.buyBlockedByEvent)
     .sort((a,b)=>b.score-a.score)[0]||null;
 
   let action;
@@ -1058,7 +1175,13 @@ function entryStrategyAnswer(q,entities,data,result){
   const bearish=!!(o.eventSignal?.confidence>=.45 && o.eventSignal.effect<0);
   let verdict,reason;
 
-  if(buyTrade){
+  if(o.purchaseExcluded){
+    verdict='DO NOT BUY — EXCLUDED';
+    reason='This commodity is excluded from new purchases by your saved strategy setting.';
+  }else if(o.buyBlockedByEvent){
+    verdict='WAIT — ACTIVE EVENT RISK';
+    reason=`${o.eventBlockReason||'Active event risk remains unresolved'}. A low price alone is not an actionable entry.`;
+  }else if(buyTrade){
     verdict='BUY NOW — WITHIN THE PORTFOLIO CAP';
     reason='The current actionable portfolio plan includes this purchase and it clears the entry, opportunity-cost, and trade-budget tests.';
   }else if(!o.inManualBuyZone){
@@ -1154,7 +1277,70 @@ function statisticsCategoryAnswer(q,entities,data,result){
   };
 }
 
+function purchaseExclusionKeysFromQuestion(q){
+  const asksExclusion=/\bexclude\b|\bexcluding\b|\bwithout\b|do not buy|don't buy|not buy|remove.*(?:option|candidate)|ignore.*(?:commodity|market)/.test(q);
+  if(!asksExclusion) return [];
+  return [...new Set(findQuestionEntities(q).map(entity=>entity.key))];
+}
+
+function qaHoldingValues(data,result){
+  if(Array.isArray(result?.holdingValues)) return result.holdingValues;
+  return (data?.holdings||[]).map(h=>{
+    const commodity=(data?.commodities||[]).find(c=>c.key===h.key);
+    const current=h.current||h.price||commodity?.price||0;
+    return {
+      ...h,
+      current,
+      value:h.value||(h.qty||0)*current
+    };
+  });
+}
+
+function hypotheticalExclusionAnswer(q,data,result){
+  const keys=purchaseExclusionKeysFromQuestion(q);
+  if(!keys.length) return null;
+
+  const plan=buildPortfolioPlan(
+    data,
+    result?.commodityOptions||[],
+    result?.currentValue||data?.totalPortfolio||0,
+    qaHoldingValues(data,result),
+    {
+      excludedKeys:keys,
+      hypothetical:true
+    }
+  );
+
+  const names=keys.map(nameFor);
+  const allocations=(plan.allocations||[])
+    .map(a=>`${a.name} ${Math.round((a.pct||0)*100)}%`)
+    .join(', ');
+  const trades=plan.meaningfulRebalance
+    ? (plan.recommendedTrades||[])
+    : [];
+  const tradeText=trades.length
+    ? trades.map(t=>`${t.action} ${t.name} ${fmt(t.dollars)}`).join('; ')
+    : 'No immediate trades';
+  const bestAlternative=(plan.eligible||[])[0]||null;
+  const originalPlan=result?.portfolioPlan||{};
+  const difference=(plan.projectedPlan||0)-(originalPlan.projectedPlan||0);
+  const comparison=difference===0
+    ? 'The projected target value is unchanged from the original candidate plan.'
+    : difference>0
+      ? `The alternative projects ${fmt(difference)} more than the original candidate plan.`
+      : `Excluding ${names.join(', ')} reduces the projected candidate value by about ${fmt(Math.abs(difference))}.`;
+
+  return {
+    title:`Alternative strategy without ${names.join(', ')}`,
+    body:`This is a temporary what-if scenario; it does not change your saved exclusion checkboxes.<br><br><strong>Decision:</strong> ${plan.headline}<br><strong>Alternative allocation:</strong> ${allocations||'100% cash'}<br><strong>Trade plan:</strong> ${tradeText}.<br>${bestAlternative?`<strong>Best remaining actionable opportunity:</strong> ${bestAlternative.name} at ${fmt(bestAlternative.price)}.<br>`:''}${comparison}`,
+    evidence:`Temporary exclusions ${names.join(', ')} · Cash allocation ${Math.round((plan.cashPct||0)*100)}% · Projected improvement ${fmt(plan.projectedImprovement||0)} (${pct(plan.improvementPct||0)}) · Opportunity-cost decision ${plan.opportunityCostDecision}.`
+  };
+}
+
 function portfolioCategoryAnswer(q,data,result){
+  const exclusionScenario=hypotheticalExclusionAnswer(q,data,result);
+  if(exclusionScenario) return exclusionScenario;
+
   if(/33%|50%|33 percent|50 percent|cap|maximum per commodity/.test(q)) return capAnswer(result);
 
   const plan=result?.portfolioPlan||{};
@@ -1169,7 +1355,7 @@ function portfolioCategoryAnswer(q,data,result){
   }
 
   if(/cash|stay out|wait|owning nothing/.test(q)){
-    const qualifying=(result?.commodityOptions||[]).filter(o=>o.inManualBuyZone&&!o.inSellZone).sort((a,b)=>b.score-a.score);
+    const qualifying=(result?.commodityOptions||[]).filter(o=>o.inManualBuyZone&&!o.inSellZone&&!o.purchaseExcluded&&!o.buyBlockedByEvent).sort((a,b)=>b.score-a.score);
     return {
       title:qualifying.length?'Cash remains a valid allocation.':'Wait in cash is valid.',
       body:qualifying.length
@@ -1253,7 +1439,7 @@ function rankingCategoryAnswer(q,data,result){
   const timeText=data?.timeRemaining||'time remaining unavailable';
   const trades=data?.tradesRemaining;
   const candidates=(result?.commodityOptions||[])
-    .filter(o=>o.inManualBuyZone&&!o.inSellZone)
+    .filter(o=>o.inManualBuyZone&&!o.inSellZone&&!o.purchaseExcluded&&!o.buyBlockedByEvent)
     .sort((a,b)=>b.score-a.score)
     .slice(0,3);
   const candidateText=candidates.length
@@ -1300,7 +1486,7 @@ function categoryPrompt(category){
     entry:'Name the commodity and ask whether to buy now or wait.',
     events:'Name an active event or a commodity affected by it.',
     statistics:'Name a commodity or ask for a cross-market statistic such as volatility.',
-    portfolio:'Ask about the capped allocation, cash, trades, or current plan.',
+    portfolio:'Ask about the capped allocation, cash, trades, current plan, or a temporary commodity exclusion.',
     ranking:'Ask how to catch the next rank, protect your position, or maximize final value.'
   };
   return {title:`More detail needed for ${advisorCategoryLabel(category)}.`,body:examples[category]||'Add a specific market question.',evidence:'The selected dropdown category controls the answer engine.'};
@@ -1440,7 +1626,7 @@ function ensureAdvisorCategoryDropdown(){
     entry:'Example: Should I buy Pills now or wait?',
     events:'Example: What does Police raid on the docks do?',
     statistics:'Example: Which commodity has been most volatile?',
-    portfolio:'Example: Is the current rebalance worth the trades?',
+    portfolio:'Example: Excluding Stolen Art, what is my best alternative strategy?',
     ranking:'Example: I am trailing the next rank—how should I recover?'
   };
 

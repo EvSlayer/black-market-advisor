@@ -10,7 +10,7 @@
 <div class="wrap">
   <div class="hero">
     <div><h1>Black Market Advisor</h1><div class="sub">Capture the current market and get a 50%-cap portfolio plan, buy/sell zones, trade steps, and event-aware decision support.</div></div>
-    <div class="pill">V2.9: Targeted event guard</div>
+    <div class="pill">V3.0: Event strategy + purchase exclusions</div>
   </div>
 
 
@@ -121,6 +121,19 @@
           <div class="mini" style="margin-bottom:10px">Leave fields blank to estimate them from saved price memory and current sparkline history. Buy Threshold is the highest clean-entry price. Sell Threshold is where taking profit becomes reasonable.</div>
           <div id="assumptions" class="assumption-grid"></div>
           <div class="assumption-actions"><button class="btn secondary" id="resetAssumptionsBtn">Reset assumptions</button></div>
+        </div>
+      </details>
+
+      <details class="assumptions-toggle" id="purchaseExclusionsPanel">
+        <summary>Exclude commodities from new purchases</summary>
+        <div class="assumptions-inner">
+          <div class="mini" style="margin-bottom:10px">
+            Checked commodities will not receive new allocations. Existing holdings are still analyzed and are not automatically sold.
+          </div>
+          <div id="purchaseExclusions" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 12px;"></div>
+          <div class="assumption-actions" style="margin-top:12px">
+            <button class="btn secondary" id="clearPurchaseExclusionsBtn" type="button">Clear exclusions</button>
+          </div>
         </div>
       </details>
     </section>
@@ -243,7 +256,7 @@
 
     <section class="card" style="margin-top:16px">
       <h2>Ask the Advisor</h2>
-      <div class="mini" style="margin-bottom:10px">Choose a question type for reliable routing, or leave Auto-detect selected. Ranking uses the leaderboard, your logged-in profile ID, the current market, remaining trades, and time left.</div>
+      <div class="mini" style="margin-bottom:10px">Choose a question type for reliable routing, or leave Auto-detect selected. You can also ask temporary what-if questions such as “Excluding Stolen Art, what is my best alternative strategy?”</div>
       <div id="advisorCategoryRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px 0;">
         <label for="advisorCategory" style="font-weight:700;">Question type</label>
         <select id="advisorCategory" style="min-width:210px;max-width:100%;padding:10px 12px;border-radius:10px;background:#101722;color:inherit;border:1px solid #34415a;">
@@ -264,12 +277,13 @@
         <button class="btn" id="askAdvisorBtn" type="button">Ask</button>
       </div>
       <div class="advisor-chips" id="advisorChips">
-        <button class="advisor-chip" type="button">When should I sell Uranium?</button>
-        <button class="advisor-chip" type="button">Should I sell Uranium and buy Military Hardware?</button>
-        <button class="advisor-chip" type="button">What is the highest Uranium has been?</button>
-        <button class="advisor-chip" type="button">What does Police raid on the docks do?</button>
-        <button class="advisor-chip" type="button">Is the current rebalance worth the trades?</button>
-        <button class="advisor-chip" type="button">How should I catch the next rank?</button>
+        <button class="advisor-chip" type="button" data-category="exit">When should I sell Uranium?</button>
+        <button class="advisor-chip" type="button" data-category="switch">Should I sell Uranium and buy Military Hardware?</button>
+        <button class="advisor-chip" type="button" data-category="history">What is the highest Uranium has been?</button>
+        <button class="advisor-chip" type="button" data-category="events">What does Police raid on the docks do?</button>
+        <button class="advisor-chip" type="button" data-category="portfolio">Is the current rebalance worth the trades?</button>
+        <button class="advisor-chip" type="button" data-category="portfolio">Excluding Stolen Art, what is my best alternative strategy?</button>
+        <button class="advisor-chip" type="button" data-category="ranking">How should I catch the next rank?</button>
       </div>
       <div id="advisorAnswer" class="advisor-answer hidden"></div>
     </section>
@@ -318,6 +332,6 @@
   <div class="footer-note">This tool does not predict the next tick. It creates a diversified portfolio plan under the 50% cap using saved price history, buy/sell thresholds, trade costs, cash discipline, and multi-window event intelligence.</div>
 </div>
 <script src="js/discord.js?v=6"></script>
-<script src="js/app.js?v=13"></script>
+<script src="js/app.js?v=14"></script>
 </body>
 </html>

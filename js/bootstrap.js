@@ -123,9 +123,74 @@ document.getElementById('resetMemoryBtn').onclick=()=>{ resetMarketMemory(); if(
 document.getElementById('resetEventMemoryBtn').onclick=()=>{ localStorage.removeItem('bm_event_memory_v4'); if(lastData){ lastResult=analyze(lastData); render(lastData,lastResult); } document.getElementById('parseStatus').textContent='Event memory reset.'; };
 const askBtn=document.getElementById('askAdvisorBtn'); if(askBtn) askBtn.onclick=()=>submitAdvisorQuestion();
 const qBox=document.getElementById('advisorQuestion'); if(qBox) qBox.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter') submitAdvisorQuestion();});
-document.querySelectorAll('.advisor-chip').forEach(b=>b.addEventListener('click',()=>submitAdvisorQuestion(b.textContent)));
+document.querySelectorAll('.advisor-chip').forEach(button=>button.addEventListener('click',()=>{
+  const category=button.dataset.category||'auto';
+  const select=document.getElementById('advisorCategory');
+  if(select && category!=='auto'){
+    select.value=category;
+    localStorage.setItem('bm_advisor_question_category',category);
+    select.dispatchEvent(new Event('change'));
+  }
+  submitAdvisorQuestion(button.textContent,category);
+}));
 document.getElementById('saveSnapshotBtn').onclick=()=>{ if(!lastData) return; const snaps=JSON.parse(localStorage.getItem('bm_snapshots')||'[]'); snaps.push({data:lastData,result:lastResult}); localStorage.setItem('bm_snapshots',JSON.stringify(snaps)); document.getElementById('parseStatus').textContent=`Snapshot saved locally (${snaps.length}).`; };
+function rerunAdvisorForStrategySettings(){
+  if(!lastData) return;
+  lastResult=analyze(lastData);
+  updateAdvisorState(lastData,lastResult);
+  render(lastData,lastResult);
+  renderMoveRecords(lastData);
+}
+
+function renderPurchaseExclusionSettings(){
+  const box=document.getElementById('purchaseExclusions');
+  if(!box || typeof COMMODITIES==='undefined') return;
+
+  const excluded=new Set(
+    typeof loadPurchaseExclusions==='function'
+      ? loadPurchaseExclusions()
+      : []
+  );
+
+  box.innerHTML='';
+
+  for(const [key,name] of COMMODITIES){
+    const label=document.createElement('label');
+    label.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 10px;border:1px solid #34415a;border-radius:10px;background:#101722;cursor:pointer;';
+
+    const input=document.createElement('input');
+    input.type='checkbox';
+    input.dataset.purchaseExclusion=key;
+    input.checked=excluded.has(key);
+
+    const text=document.createElement('span');
+    text.textContent=name;
+
+    input.addEventListener('change',()=>{
+      if(typeof setPurchaseExclusion==='function'){
+        setPurchaseExclusion(key,input.checked);
+      }
+      rerunAdvisorForStrategySettings();
+    });
+
+    label.append(input,text);
+    box.appendChild(label);
+  }
+}
+
+const clearPurchaseExclusionsButton=
+  document.getElementById('clearPurchaseExclusionsBtn');
+
+clearPurchaseExclusionsButton?.addEventListener('click',()=>{
+  if(typeof clearPurchaseExclusions==='function'){
+    clearPurchaseExclusions();
+  }
+  renderPurchaseExclusionSettings();
+  rerunAdvisorForStrategySettings();
+});
+
 renderAssumptions(null);
+renderPurchaseExclusionSettings();
 startAutoMonitorReceiver();
 
 const developerToggle = document.getElementById('developerModeToggle');
@@ -163,6 +228,9 @@ if (clearHistoryButton) {
 const discordEnabledInput =
   document.getElementById('discordAlertsEnabled');
 
+const discordWebhookInput =
+  document.getElementById('discordWebhookUrl');
+
 const testDiscordButton =
   document.getElementById('testDiscordWebhookBtn');
 
@@ -175,14 +243,23 @@ if (discordEnabledInput) {
   discordEnabledInput.checked = !!savedDiscordSettings.enabled;
 }
 
+if (discordWebhookInput) {
+  discordWebhookInput.value = savedDiscordSettings.webhookUrl || '';
+}
+
 function persistDiscordSettings() {
   saveDiscordSettings({
-    enabled: !!discordEnabledInput?.checked
+    enabled: !!discordEnabledInput?.checked,
+    webhookUrl: discordWebhookInput?.value.trim() || ''
   });
 }
 
-
 discordEnabledInput?.addEventListener(
+  'change',
+  persistDiscordSettings
+);
+
+discordWebhookInput?.addEventListener(
   'change',
   persistDiscordSettings
 );

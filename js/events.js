@@ -1,5 +1,14 @@
 const EVENT_TYPE_RULES = [
   {
+    type: "Stolen Inventory Influx",
+    expectedDirection: "down",
+    baseConfidence: 0.82,
+    patterns: [
+      /museum heist gone wrong/i,
+      /heist gone wrong/i
+    ]
+  },
+  {
     type: "Supply Increase",
     expectedDirection: "down",
     baseConfidence: 0.9,
@@ -134,7 +143,7 @@ function parseEventAgeMinutes(text){
   m=s.match(/\((\d+)d ago\)/i); if(m) return Number(m[1])*1440;
   return 0;
 }
-function eventTargetKey(name){
+function eventTargetKeys(name){
   const normalized=normalizeEventName(name);
 
   const validatedKey=value=>{
@@ -148,23 +157,45 @@ function eventTargetKey(name){
     return key;
   };
 
+  const explicit=[];
+
   // Original event format: “Event name — Commodity affected”.
   const affectedMatch=normalized.match(/[—-]\s*(.+?)\s+affected$/i);
   if(affectedMatch){
     const key=validatedKey(affectedMatch[1]);
-    if(key) return key;
+    if(key) explicit.push(key);
   }
 
   // Current game format: “Supply glut hits the streets: Exotic Animals”.
-  // Only accept the suffix when it resolves to a known commodity so ordinary
-  // punctuation in an event name cannot create a false target.
   const colonMatch=normalized.match(/:\s*([^:]+?)\s*$/);
   if(colonMatch){
     const key=validatedKey(colonMatch[1]);
-    if(key) return key;
+    if(key) explicit.push(key);
   }
 
-  return null;
+  if(explicit.length) return [...new Set(explicit)];
+
+  // Event-name knowledge. These mappings are intentionally narrow: they are
+  // only used when the wording clearly points to a specific market.
+  const hints=[
+    {test:/museum heist gone wrong|heist gone wrong/i,keys:['stolen_art']},
+    {test:/museum heist|museum robbery|gallery heist/i,keys:['stolen_art']}
+  ];
+
+  for(const hint of hints){
+    if(hint.test.test(normalized)){
+      return hint.keys.filter(key=>
+        typeof COMMODITIES==='undefined' ||
+        !Array.isArray(COMMODITIES) ||
+        COMMODITIES.some(([commodityKey])=>commodityKey===key)
+      );
+    }
+  }
+
+  return [];
+}
+function eventTargetKey(name){
+  return eventTargetKeys(name)[0]||null;
 }
 function clonePrices(data){
   return Object.fromEntries((data.commodities||[]).map(c=>[c.key,Number(c.price)||0]));
@@ -349,14 +380,32 @@ function dedupeRawEvents(events){
   for(const event of events){
     const existing=byName.get(event.name);
 
-    // When the page repeats the same normalized event with different ages,
-    // keep the youngest active copy for display and active-signal processing.
-    if(!existing || event.ageMinutes<existing.ageMinutes){
-      byName.set(event.name,event);
+    if(!existing){
+      byName.set(event.name,{
+        ...event,
+        activeCopies:1,
+        copyAges:[Number(event.ageMinutes)||0],
+        rawCopies:[event.raw]
+      });
+      continue;
+    }
+
+    existing.activeCopies++;
+    existing.copyAges.push(Number(event.ageMinutes)||0);
+    existing.rawCopies.push(event.raw);
+
+    // Keep the youngest copy as the representative active age while retaining
+    // every displayed age for exposure and explanation.
+    if((Number(event.ageMinutes)||0)<(Number(existing.ageMinutes)||0)){
+      existing.ageMinutes=Number(event.ageMinutes)||0;
+      existing.raw=event.raw;
     }
   }
 
-  return [...byName.values()];
+  return [...byName.values()].map(event=>({
+    ...event,
+    copyAges:[...event.copyAges].sort((a,b)=>a-b)
+  }));
 }
 
 function updateEventMemory(data){
@@ -377,6 +426,7 @@ function updateEventMemory(data){
         name,
         ageMinutes: parseEventAgeMinutes(raw),
         targetKey: eventTargetKey(name),
+        targetKeys: eventTargetKeys(name),
         eventType: classification.type,
         expectedDirection: classification.expectedDirection,
         classificationConfidence: classification.classificationConfidence,
@@ -386,9 +436,9 @@ function updateEventMemory(data){
     .filter(event => event.name);
 
   const rawEvents = dedupeRawEvents(parsedEvents);
-  const snapshotSig=rawEvents.map(e=>e.name).sort().join('|')+'|'+Object.values(prices).join(',');
+  const snapshotSig=rawEvents.map(e=>`${e.name}#${e.activeCopies||1}@${(e.copyAges||[e.ageMinutes||0]).join(',')}`).sort().join('|')+'|'+Object.values(prices).join(',');
   if(!mem.snapshots.some(x=>x.signature===snapshotSig)){
-    mem.snapshots.push({at:now.toISOString(),events:rawEvents.map(e=>e.name),prices,signature:snapshotSig});
+    mem.snapshots.push({at:now.toISOString(),events:rawEvents.map(e=>({name:e.name,activeCopies:e.activeCopies||1,copyAges:e.copyAges||[e.ageMinutes||0]})),prices,signature:snapshotSig});
     if(mem.snapshots.length>2000) mem.snapshots=mem.snapshots.slice(-2000);
   }
   for(const ev of rawEvents){
@@ -401,7 +451,10 @@ function updateEventMemory(data){
       occ = {
   id: ev.name + "|" + inferredStart.toISOString(),
   name: ev.name,
-  targetKey: eventTargetKey(ev.name),
+  targetKey: ev.targetKey||eventTargetKey(ev.name),
+  targetKeys: ev.targetKeys||eventTargetKeys(ev.name),
+  activeCopies: ev.activeCopies||1,
+  copyAges: ev.copyAges||[ev.ageMinutes||0],
 
   eventType: ev.eventType,
   expectedDirection: ev.expectedDirection,
@@ -424,6 +477,10 @@ function updateEventMemory(data){
       occ.backfilledFromHistory=true;
     }
     occ.lastSeenAt=now.toISOString();
+    occ.targetKey=ev.targetKey||eventTargetKey(ev.name);
+    occ.targetKeys=ev.targetKeys||eventTargetKeys(ev.name);
+    occ.activeCopies=ev.activeCopies||1;
+    occ.copyAges=ev.copyAges||[ev.ageMinutes||0];
     occ.eventType = ev.eventType;
 occ.expectedDirection = ev.expectedDirection;
 occ.classificationConfidence = ev.classificationConfidence;
@@ -444,6 +501,7 @@ const active = {};
       ...(p||{
         name:ev.name,
         targetKey:ev.targetKey||eventTargetKey(ev.name),
+        targetKeys:ev.targetKeys||eventTargetKeys(ev.name),
         occurrences:0,
         windows:{},
         summary:{}
@@ -453,7 +511,12 @@ const active = {};
       classificationConfidence:ev.classificationConfidence,
       classificationMatched:ev.classificationMatched,
       ageMinutes:ev.ageMinutes,
-      raw:ev.raw
+      activeCopies:ev.activeCopies||1,
+      copyAges:ev.copyAges||[ev.ageMinutes||0],
+      targetKey:ev.targetKey||eventTargetKey(ev.name),
+      targetKeys:ev.targetKeys||eventTargetKeys(ev.name),
+      raw:ev.raw,
+      rawCopies:ev.rawCopies||[ev.raw]
     };
   }
   return {
@@ -505,23 +568,30 @@ function getEventSignal(eventMemory, commodityKey) {
       }
     }
 
-    const targetKey = event.targetKey || eventTargetKey(event.name);
-    const appliesToCommodity = !targetKey || targetKey === commodityKey;
+    const targetKeys = event.targetKeys?.length
+      ? event.targetKeys
+      : eventTargetKeys(event.name);
+    const targetKey = event.targetKey || targetKeys[0] || null;
+    const appliesToCommodity = !targetKeys.length || targetKeys.includes(commodityKey);
 
-    if (!appliesToCommodity && targetKey) continue;
+    if (!appliesToCommodity && targetKeys.length) continue;
 
-    const directionPrior =
+    const activeCopies=Math.max(1,Number(event.activeCopies||1));
+    const copyExposure=Math.min(1.35,1+(activeCopies-1)*0.12);
+    const baseDirectionPrior =
       event.expectedDirection === "down" ? -0.12 :
       event.expectedDirection === "up" ? 0.10 :
       0;
+    const directionPrior=baseDirectionPrior*copyExposure;
 
-    const isDirectTarget = Boolean(targetKey && targetKey === commodityKey);
+    const isDirectTarget = Boolean(targetKeys.includes(commodityKey));
 
     // If there is no usable history yet, classification still matters for an
     // explicitly targeted event. A known supply glut should not be treated as
     // neutral merely because the advisor has not observed several prior copies.
     if (!stat) {
       const classificationWeight = isDirectTarget ? 0.75 : 0.35;
+      const copyConfidenceBoost=Math.min(1.20,1+(activeCopies-1)*0.08);
 
       signals.push({
         name: event.name,
@@ -537,11 +607,14 @@ function getEventSignal(eventMemory, commodityKey) {
         historicalConfidence: 0,
         confidence: Math.min(
           1,
-          event.classificationConfidence * classificationWeight
+          event.classificationConfidence * classificationWeight * copyConfidenceBoost
         ),
 
         ageMinutes: event.ageMinutes || 0,
+        activeCopies,
+        copyAges:event.copyAges||[event.ageMinutes||0],
         targetKey,
+        targetKeys,
         window: null,
         source: "classification",
         targeted: isDirectTarget,
@@ -552,7 +625,12 @@ function getEventSignal(eventMemory, commodityKey) {
         activeTargetedBullish:
           isDirectTarget &&
           event.expectedDirection === "up" &&
-          event.classificationConfidence >= 0.70
+          event.classificationConfidence >= 0.70,
+        activeTargetedCaution:
+          isDirectTarget &&
+          event.expectedDirection == null &&
+          activeCopies >= 2 &&
+          event.classificationConfidence >= 0.60
       });
 
       continue;
@@ -565,11 +643,12 @@ function getEventSignal(eventMemory, commodityKey) {
     const sourceMultiplier =
       source === "exact" ? 1 : 0.82;
 
+    const copyConfidenceBoost=Math.min(1.15,1+(activeCopies-1)*0.06);
     const combinedConfidence =
       (
         historicalConfidence * 0.75 +
         event.classificationConfidence * 0.25
-      ) * sourceMultiplier;
+      ) * sourceMultiplier * copyConfidenceBoost;
 
     // Let measured history lead, while retaining a small directional prior
     // from a high-confidence classification. This prevents one noisy sample from
@@ -602,7 +681,10 @@ function getEventSignal(eventMemory, commodityKey) {
       confidence: Math.min(1, combinedConfidence),
 
       ageMinutes: event.ageMinutes || 0,
+      activeCopies,
+      copyAges:event.copyAges||[event.ageMinutes||0],
       targetKey,
+      targetKeys,
       window,
       source,
       targeted: isDirectTarget,
@@ -616,7 +698,13 @@ function getEventSignal(eventMemory, commodityKey) {
         isDirectTarget &&
         event.expectedDirection === "up" &&
         event.classificationConfidence >= 0.70 &&
-        !strongContraryHistory
+        !strongContraryHistory,
+      activeTargetedCaution:
+        isDirectTarget &&
+        event.expectedDirection == null &&
+        activeCopies >= 2 &&
+        event.classificationConfidence >= 0.60 &&
+        !(stat.n>=3 && stat.consistency>=0.70 && stat.avg>0.03)
     });
   }
 
@@ -676,6 +764,13 @@ function getEventSignal(eventMemory, commodityKey) {
   const blockingSignals = signals.filter(
     signal => signal.activeTargetedBearish
   );
+  const cautionSignals = signals.filter(
+    signal => signal.activeTargetedCaution
+  );
+  const activeTargetedCaution = cautionSignals.length>0;
+  const maxActiveCopies = signals.length
+    ? Math.max(...signals.map(signal=>Number(signal.activeCopies||1)))
+    : 0;
   const youngestAgeMinutes = signals.length
     ? Math.min(...signals.map(signal => Number(signal.ageMinutes || 0)))
     : null;
@@ -691,7 +786,10 @@ function getEventSignal(eventMemory, commodityKey) {
       bestSignal?.expectedDirection || null,
     activeTargetedBearish,
     activeTargetedBullish,
+    activeTargetedCaution,
     blockingSignals,
+    cautionSignals,
+    maxActiveCopies,
     youngestAgeMinutes,
     signals
   };

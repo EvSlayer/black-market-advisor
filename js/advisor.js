@@ -25,6 +25,11 @@ function advisorRecentPriceTrend(commodity, points=8){
 function analyze(data){
   const assumptions=getAssumptions(data), params=modeParams();
   const eventMemory = updateEventMemory(data);
+  const purchaseExclusionKeys=new Set(
+    typeof loadPurchaseExclusions==='function'
+      ? loadPurchaseExclusions()
+      : []
+  );
   const currentValue = data.totalPortfolio || (data.cash + data.holdings.reduce((s,h)=>s+(h.value||h.qty*(h.current||h.price)),0));
 
   // Treat tiny leftover holdings as dust. The game can leave you with 1 share of
@@ -51,24 +56,44 @@ function analyze(data){
     const eventSignal = getEventSignal(eventMemory,c.key);
     const recentTrend = advisorRecentPriceTrend(c,8);
 
-    // A directly targeted, high-confidence bearish event is a temporary entry
-    // guard—not merely a small score penalty. This prevents a cheap-looking price
-    // from triggering a full allocation while the event is still active.
-    const buyBlockedByEvent = Boolean(eventSignal.activeTargetedBearish);
-    const blockingEvent = eventSignal.blockingSignals?.[0] || null;
+    // Hard block: a directly targeted bearish event remains active.
+    // Caution block: a directly targeted ambiguous event has multiple active
+    // copies and the current price is still falling.
+    const hardEventBlock=Boolean(eventSignal.activeTargetedBearish);
+    const cautionEventBlock=Boolean(
+      eventSignal.activeTargetedCaution &&
+      recentTrend.pct<=-.02
+    );
+    const buyBlockedByEvent=hardEventBlock||cautionEventBlock;
+    const blockingEvent=(
+      eventSignal.blockingSignals?.[0] ||
+      eventSignal.cautionSignals?.[0] ||
+      null
+    );
+    const eventBlockLevel=hardEventBlock?'hard':cautionEventBlock?'caution':'none';
+    const copies=Number(
+      blockingEvent?.activeCopies ||
+      eventSignal.maxActiveCopies ||
+      1
+    );
     const eventBlockReason = buyBlockedByEvent
-      ? `${blockingEvent?.name||'Active targeted bearish event'} remains active${recentTrend.label==='falling'?' while the recent price trend is still falling':''}`
+      ? hardEventBlock
+        ? `${blockingEvent?.name||'Active targeted bearish event'} remains active${copies>1?` (${copies} copies)`:''}`
+        : `${blockingEvent?.name||'Active targeted event'} has ${copies} active copies while the recent price trend is still falling`
       : '';
 
-    // Keep threshold adjustments for diagnostics, but use a stronger discount
-    // while a targeted bearish event is active. Eligibility is controlled
-    // separately by actionableBuyZone below.
+    const purchaseExcluded=purchaseExclusionKeys.has(c.key);
+
+    // Thresholds remain useful for diagnostics, but event and user guards control
+    // whether a price is actually actionable.
     const learnedEventAdj = eventSignal.confidence>=.45
       ? Math.max(-.12,Math.min(.10,eventSignal.effect*.55))
       : 0;
-    const eventAdj = buyBlockedByEvent
+    const eventAdj = hardEventBlock
       ? Math.max(-.25,Math.min(-.15,eventSignal.effect*.75))
-      : learnedEventAdj;
+      : cautionEventBlock
+        ? Math.min(-.10,learnedEventAdj)
+        : learnedEventAdj;
 
     const buyThreshold = baseBuyThreshold * (1 + eventAdj);
     const sellThreshold = baseSellThreshold * (1 + eventAdj*.65);
@@ -76,9 +101,11 @@ function analyze(data){
     const inSellZone = isValidMoney(sellThreshold) && c.price >= sellThreshold;
     const buyThresholdRatio = buyThreshold > 0 ? c.price / buyThreshold : Infinity;
     const priceInBuyZone = isValidMoney(buyThreshold) && c.price <= buyThreshold * params.buyThresholdFactor;
-    const actionableBuyZone = priceInBuyZone && !buyBlockedByEvent;
-    // Keep the legacy property aligned with what is actually buyable so every
-    // existing UI and QA surface stops labeling a blocked commodity “BUY ZONE”.
+    const actionableBuyZone =
+      priceInBuyZone &&
+      !buyBlockedByEvent &&
+      !purchaseExcluded;
+    // Keep the legacy property aligned with what is actually buyable.
     const inManualBuyZone = actionableBuyZone;
     const held = holdingValues.find(h=>h.key===c.key);
     const same = !!(meaningfulHoldings.length===1 && currentHolding && c.key===currentHolding.key);
@@ -97,7 +124,9 @@ function analyze(data){
     let score = 50 + Math.min(35,upsidePct*18) + Math.min(25,improvementPct*90) - tradesNeeded*params.scorePenalty - Math.max(0,pos-.75)*25;
     if(same) score += 7;
     if(eventSignal.confidence>=.45) score += Math.max(-10,Math.min(10,eventSignal.effect*100*eventSignal.confidence*.8));
-    if(buyBlockedByEvent) score -= 35;
+    if(hardEventBlock) score -= 35;
+    else if(cautionEventBlock) score -= 24;
+    if(purchaseExcluded) score -= 40;
     score = Math.max(0,Math.min(100,score));
     return {
       type:'commodity',
@@ -116,7 +145,12 @@ function analyze(data){
       eventAdjustment:eventAdj,
       recentTrend,
       buyBlockedByEvent,
+      hardEventBlock,
+      cautionEventBlock,
+      eventBlockLevel,
       eventBlockReason,
+      purchaseExcluded,
+      purchaseExclusionReason:purchaseExcluded?'Excluded from new purchases by user':'',
       sellThresholdRatio,
       inSellZone,
       buyThresholdRatio,
@@ -140,7 +174,7 @@ function analyze(data){
   if(allocationMode()==='split'){
     const splitCandidates = commodityOptions
       .filter(o=>!currentHolding || o.key!==currentHolding.key)
-      .filter(o=>!o.buyBlockedByEvent)
+      .filter(o=>!o.buyBlockedByEvent && !o.purchaseExcluded)
       .filter(o=>o.actionableBuyZone || o.pos <= Math.max(params.buyZone+.10,.58))
       .sort((a,b)=>b.expectedValue-a.expectedValue || b.score-a.score);
     const topA = splitCandidates[0];
@@ -202,18 +236,19 @@ function analyze(data){
       const splitDiversificationBonus = o.type==='split' ? currentValue*0.015 : 0;
       o.decisionRank = o.expectedValue - (o.tradesNeeded * currentValue * 0.01) + (o.score/100) * currentValue * 0.02 + splitDiversificationBonus;
       if(o.buyBlockedByEvent) o.decisionRank -= currentValue*0.75;
+      if(o.purchaseExcluded) o.decisionRank -= currentValue*0.90;
     }
   });
   options.sort((a,b)=>b.decisionRank-a.decisionRank || b.expectedValue-a.expectedValue || b.score-a.score);
 
   const best = options[0];
   const bestSwitch = commodityOptions
-    .filter(o=>!o.buyBlockedByEvent)
+    .filter(o=>!o.buyBlockedByEvent && !o.purchaseExcluded)
     .filter(o=>!(meaningfulHoldings.length===1 && currentHolding && o.key===currentHolding.key))
     .sort((a,b)=>b.expectedValue-a.expectedValue || b.score-a.score)[0];
   const bestGrowth = options
     .filter(o=>!['cash','portfolio'].includes(o.type))
-    .filter(o=>!o.buyBlockedByEvent)
+    .filter(o=>!o.buyBlockedByEvent && !o.purchaseExcluded)
     .filter(o=>!(meaningfulHoldings.length===1 && currentHolding && o.key===currentHolding.key))
     .sort((a,b)=>b.decisionRank-a.decisionRank || b.expectedValue-a.expectedValue || b.score-a.score)[0] || bestSwitch;
   const thresholdDollar = currentValue * params.minImproveDollar;
@@ -307,7 +342,13 @@ function analyze(data){
     const confidenceBase = action==='DO NOTHING' ? 74 : 62;
     decisionConfidence = Math.round(Math.max(45, Math.min(96, confidenceBase + Math.abs(edgePct)*160 - ((chosen?.tradesNeeded||0)*2))));
   }
-  const portfolioPlan = buildPortfolioPlan(data, commodityOptions, currentValue, holdingValues);
+  const portfolioPlan = buildPortfolioPlan(
+    data,
+    commodityOptions,
+    currentValue,
+    holdingValues,
+    {excludedKeys:[...purchaseExclusionKeys]}
+  );
   // The 50%-cap portfolio plan is the single source of truth for public advice.
   // Legacy single-stock analysis remains available only as explicitly theoretical support.
   const legacyDecision = {action, chosen, risk: null, sellPressure, edge, edgePct};
@@ -354,6 +395,7 @@ function analyze(data){
   };
 
   const eventBlockedOptions=commodityOptions.filter(o=>o.buyBlockedByEvent);
+  const purchaseExcludedOptions=commodityOptions.filter(o=>o.purchaseExcluded);
 
-  return {options,commodityOptions,splitOptions,cashOption,currentOpt,best,bestSwitch,bestGrowth,chosen,legacyDecision,primaryDecision,recommendedTrades,actionableImprovement,actionableImprovementPct,action,currentValue,params,allocationMode:allocationMode(),decisionConfidence,dataConfidence,risk,thresholdDollar,thresholdPct,baselineExpected,currentProfitPct,currentRemainingUpside,cashCompelling,switchCompelling,rawSwitchCompelling,replacementInBuyZone,replacementExtremeEdge,currentOverExtended,sellPressure,bestCashBuyIsClean,meaningfulHoldings,ignoredDust,dustThreshold,majorThresholdPct,positionAssessments,portfolioOpt,dominantHolding,portfolioPlan,eventMemory,eventBlockedOptions};
+  return {options,commodityOptions,splitOptions,cashOption,currentOpt,best,bestSwitch,bestGrowth,chosen,legacyDecision,primaryDecision,recommendedTrades,actionableImprovement,actionableImprovementPct,action,currentValue,params,allocationMode:allocationMode(),decisionConfidence,dataConfidence,risk,thresholdDollar,thresholdPct,baselineExpected,currentProfitPct,currentRemainingUpside,cashCompelling,switchCompelling,rawSwitchCompelling,replacementInBuyZone,replacementExtremeEdge,currentOverExtended,sellPressure,bestCashBuyIsClean,holdingValues,meaningfulHoldings,ignoredDust,dustThreshold,majorThresholdPct,positionAssessments,portfolioOpt,dominantHolding,portfolioPlan,eventMemory,eventBlockedOptions,purchaseExclusions:[...purchaseExclusionKeys],purchaseExcludedOptions};
 }

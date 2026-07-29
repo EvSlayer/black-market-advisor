@@ -474,11 +474,8 @@ function renderSellNowVsHold(data,result){
         const valueAtSellThreshold=qty*Number(option.sellThreshold||option.price||0);
         const valueAtTarget=qty*Number(option.target||option.price||0);
         return {
-          key:position.key,
-          name:position.name||option.name,
-          qty,
+          key:position.key,name:position.name||option.name,qty,
           currentPrice:Number(option.price||position.current||0),
-          avgBuyPrice:Number(position.avgBuy||0),
           sellNowValue,
           sellThresholdPrice:Number(option.sellThreshold||0),
           valueAtSellThreshold,
@@ -489,7 +486,6 @@ function renderSellNowVsHold(data,result){
           additionalToTarget:valueAtTarget-sellNowValue,
           additionalToTargetPct:sellNowValue>0?valueAtTarget/sellNowValue-1:0,
           sellPressure:position.sellPressure||'N/A',
-          alreadyAtOrAboveThreshold:Number(option.price||0)>=Number(option.sellThreshold||Infinity),
           alreadyAtOrAboveTarget:Number(option.price||0)>=Number(option.target||Infinity)
         };
       });
@@ -514,21 +510,18 @@ function renderSellNowVsHold(data,result){
   const thresholdExtra=thresholdTotal-sellNowTotal;
   const targetExtra=targetTotal-sellNowTotal;
 
-  const rows=positions.map(position=>{
-    const thresholdClass=position.additionalToSellThreshold>=0?'good':'bad';
-    const targetClass=position.additionalToTarget>=0?'good':'bad';
-    const targetStatus=position.alreadyAtOrAboveTarget
-      ? '<span class="warn">At/above target</span>'
-      : `${signedMoney(position.additionalToTarget)} (${signedPct(position.additionalToTargetPct)})`;
-    return `
-      <tr>
-        <td><strong>${position.name}</strong><br><span class="mini">${position.qty.toLocaleString()} units · ${position.sellPressure} sell pressure</span></td>
-        <td class="num">${fmt(position.currentPrice)}<br><span class="mini">${fmt(position.sellNowValue)}</span></td>
-        <td class="num">${fmt(position.sellThresholdPrice)}<br><span class="${thresholdClass}">${signedMoney(position.additionalToSellThreshold)} (${signedPct(position.additionalToSellThresholdPct)})</span></td>
-        <td class="num">${fmt(position.targetPrice)}<br><span class="${targetClass}">${targetStatus}</span></td>
-      </tr>
-    `;
-  }).join('');
+  const rows=positions.map(position=>`
+    <tr>
+      <td><strong>${position.name}</strong><br><span class="mini">${position.qty.toLocaleString()} units · ${position.sellPressure} sell pressure</span></td>
+      <td class="num">${fmt(position.currentPrice)}<br><span class="mini">${fmt(position.sellNowValue)}</span></td>
+      <td class="num">${fmt(position.sellThresholdPrice)}<br><span class="${position.additionalToSellThreshold>=0?'good':'bad'}">${signedMoney(position.additionalToSellThreshold)} (${signedPct(position.additionalToSellThresholdPct)})</span></td>
+      <td class="num">${fmt(position.targetPrice)}<br><span class="${position.additionalToTarget>=0?'good':'bad'}">${position.alreadyAtOrAboveTarget?'<span class="warn">At/above target</span>':`${signedMoney(position.additionalToTarget)} (${signedPct(position.additionalToTargetPct)})`}</span></td>
+    </tr>
+  `).join('');
+
+  const options=(result?.commodityOptions||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const defaultSource=positions[0]?.key||'';
+  const defaultTarget=options.find(option=>option.key!==defaultSource)?.key||'';
 
   box.innerHTML=`
     <div class="metrics" style="margin-bottom:14px">
@@ -536,21 +529,84 @@ function renderSellNowVsHold(data,result){
       <div class="metric"><div class="k">At sell thresholds</div><div class="v">${fmt(thresholdTotal)}</div><div class="${thresholdExtra>=0?'good':'bad'}">${signedMoney(thresholdExtra)}</div></div>
       <div class="metric"><div class="k">At configured targets</div><div class="v">${fmt(targetTotal)}</div><div class="${targetExtra>=0?'good':'bad'}">${signedMoney(targetExtra)} (${signedPct(sellNowTotal>0?targetExtra/sellNowTotal:0)})</div></div>
     </div>
-    <div style="overflow:auto">
-      <table>
-        <tr>
-          <th>Holding</th>
-          <th class="num">Sell now</th>
-          <th class="num">Sell threshold</th>
-          <th class="num">Configured target/max</th>
-        </tr>
-        ${rows}
-      </table>
+    <div style="overflow:auto"><table>
+      <tr><th>Holding</th><th class="num">Sell now</th><th class="num">Sell threshold</th><th class="num">Configured target/max</th></tr>
+      ${rows}
+    </table></div>
+
+    <div style="margin-top:20px;padding-top:18px;border-top:1px solid #34415a">
+      <h3 style="margin:0 0 6px">Hypothetical Switch Calculator</h3>
+      <div class="mini" style="margin-bottom:12px">Sell one current holding now and compare investing those proceeds in another commodity. The 50% cap, existing destination holdings, whole-unit rounding, exclusions, and event blocks are included.</div>
+      <div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <label style="display:flex;flex-direction:column;gap:6px;min-width:230px;flex:1">
+          <span class="mini"><strong>Sell/use proceeds from</strong></span>
+          <select id="switchCalculatorSource" style="padding:10px 12px;border-radius:10px;background:#101722;color:inherit;border:1px solid #34415a">
+            ${positions.map(position=>`<option value="${position.key}" ${position.key===defaultSource?'selected':''}>${position.name} — ${fmt(position.sellNowValue)}</option>`).join('')}
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px;min-width:230px;flex:1">
+          <span class="mini"><strong>Invest hypothetically in</strong></span>
+          <select id="switchCalculatorTarget" style="padding:10px 12px;border-radius:10px;background:#101722;color:inherit;border:1px solid #34415a">
+            ${options.map(option=>`<option value="${option.key}" ${option.key===defaultTarget?'selected':''}>${option.name} — ${fmt(option.price)}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div id="switchCalculatorResult" style="margin-top:14px"></div>
     </div>
-    <div class="mini" style="margin-top:10px">
-      “Target/max” is a scenario based on the configured assumption, not a promise that the market will reach that price. Values exclude any game transaction fee unless one is present in the captured data.
-    </div>
+
+    <div class="mini" style="margin-top:10px">“Target/max” is a scenario based on the configured assumption, not a promise that the market will reach that price. Values exclude any game transaction fee unless one is present in the captured data.</div>
   `;
+
+  const sourceSelect=document.getElementById('switchCalculatorSource');
+  const targetSelect=document.getElementById('switchCalculatorTarget');
+  const resultBox=document.getElementById('switchCalculatorResult');
+
+  const renderSwitchCalculator=()=>{
+    if(!sourceSelect||!targetSelect||!resultBox) return;
+    if(sourceSelect.value===targetSelect.value){
+      const replacement=options.find(option=>option.key!==sourceSelect.value);
+      if(replacement) targetSelect.value=replacement.key;
+    }
+    const scenario=typeof calculateCommoditySwitchScenario==='function'
+      ? calculateCommoditySwitchScenario(data,result,sourceSelect.value,targetSelect.value)
+      : null;
+    if(!scenario){
+      resultBox.innerHTML='<div class="mini">Choose two different commodities to calculate a switch.</div>';
+      return;
+    }
+
+    const restriction=scenario.purchaseExcluded
+      ? `<div class="bad" style="margin-bottom:10px"><strong>Not actionable:</strong> ${scenario.targetName} is excluded from new purchases.</div>`
+      : scenario.buyBlockedByEvent
+        ? `<div class="bad" style="margin-bottom:10px"><strong>Not actionable:</strong> ${scenario.eventBlockReason||'Active event risk blocks this purchase.'}</div>`
+        : !scenario.actionable
+          ? `<div class="warn" style="margin-bottom:10px"><strong>Hypothetical only:</strong> ${scenario.targetName} is currently outside its actionable buy zone.</div>`
+          : `<div class="good" style="margin-bottom:10px"><strong>Currently actionable:</strong> ${scenario.targetName} is inside its clean-entry rules.</div>`;
+
+    const capNote=scenario.capLimited
+      ? `<div class="mini" style="margin-top:8px">The ${Math.round(scenario.cap*100)}% cap limits the new investment to ${fmt(scenario.amountInvested)}. ${fmt(scenario.leftoverCash)} remains cash, including whole-unit rounding.</div>`
+      : `<div class="mini" style="margin-top:8px">${fmt(scenario.leftoverCash)} remains cash after whole-unit rounding.</div>`;
+
+    resultBox.innerHTML=`
+      ${restriction}
+      <div class="metrics" style="margin-bottom:12px">
+        <div class="metric"><div class="k">Sell ${scenario.sourceName} now</div><div class="v">${fmt(scenario.sourceSellNowValue)}</div></div>
+        <div class="metric"><div class="k">Buy ${scenario.targetName}</div><div class="v">${scenario.units.toLocaleString()} units</div><div class="mini">${fmt(scenario.spent)} invested at ${fmt(scenario.targetCurrentPrice)}</div></div>
+        <div class="metric"><div class="k">Cash left</div><div class="v">${fmt(scenario.leftoverCash)}</div></div>
+      </div>
+      <div style="overflow:auto"><table>
+        <tr><th>Scenario</th><th class="num">Destination price</th><th class="num">Projected value</th><th class="num">Gain vs cash</th><th class="num">Vs holding ${scenario.sourceName}</th></tr>
+        <tr><td><strong>At ${scenario.targetName} sell threshold</strong></td><td class="num">${fmt(scenario.targetSellThresholdPrice)}</td><td class="num">${fmt(scenario.valueAtSellThreshold)}</td><td class="num ${scenario.gainAtSellThreshold>=0?'good':'bad'}">${signedMoney(scenario.gainAtSellThreshold)} (${signedPct(scenario.gainAtSellThresholdPct)})</td><td class="num ${scenario.versusHoldingSourceAtThreshold>=0?'good':'bad'}">${signedMoney(scenario.versusHoldingSourceAtThreshold)}</td></tr>
+        <tr><td><strong>At ${scenario.targetName} target/max</strong></td><td class="num">${fmt(scenario.targetTargetPrice)}</td><td class="num">${fmt(scenario.valueAtTarget)}</td><td class="num ${scenario.gainAtTarget>=0?'good':'bad'}">${signedMoney(scenario.gainAtTarget)} (${signedPct(scenario.gainAtTargetPct)})</td><td class="num ${scenario.versusHoldingSourceAtTarget>=0?'good':'bad'}">${signedMoney(scenario.versusHoldingSourceAtTarget)}</td></tr>
+      </table></div>
+      ${capNote}
+      <div class="mini" style="margin-top:8px">Holding ${scenario.sourceName} is valued at ${fmt(scenario.sourceValueAtSellThreshold)} at its own sell threshold and ${fmt(scenario.sourceValueAtTarget)} at its own target/max.</div>
+    `;
+  };
+
+  sourceSelect?.addEventListener('change',renderSwitchCalculator);
+  targetSelect?.addEventListener('change',renderSwitchCalculator);
+  renderSwitchCalculator();
 }
 
 function render(data, result){

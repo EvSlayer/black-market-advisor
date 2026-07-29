@@ -22,6 +22,78 @@ function advisorRecentPriceTrend(commodity, points=8){
   };
 }
 
+function calculateCommoditySwitchScenario(data,result,sourceKey,targetKey){
+  const source=(result?.positionAssessments||[]).find(position=>position.key===sourceKey);
+  const target=(result?.commodityOptions||[]).find(option=>option.key===targetKey);
+  if(!source || !target || sourceKey===targetKey) return null;
+
+  const portfolioValue=Number(result?.currentValue||data?.totalPortfolio||0);
+  const cap=Number(result?.portfolioPlan?.cap||0.50);
+  const capDollars=Math.max(0,portfolioValue*cap);
+  const existingTargetValue=(result?.holdingValues||data?.holdings||[])
+    .filter(holding=>holding.key===targetKey)
+    .reduce((sum,holding)=>sum+Number(holding.value||Number(holding.qty||0)*Number(holding.current||holding.price||target.price||0)),0);
+
+  const sourceValue=Number(source.value||source.exitComparison?.sellNowValue||0);
+  const availableRoom=Math.max(0,capDollars-existingTargetValue);
+  const amountInvested=Math.min(sourceValue,availableRoom);
+  const units=target.price>0 ? Math.floor(amountInvested/target.price) : 0;
+  const spent=units*Number(target.price||0);
+  const capRemainder=Math.max(0,sourceValue-amountInvested);
+  const roundingCash=Math.max(0,amountInvested-spent);
+  const leftoverCash=capRemainder+roundingCash;
+
+  const valueAtSellThreshold=units*Number(target.sellThreshold||target.price||0)+leftoverCash;
+  const valueAtTarget=units*Number(target.target||target.price||0)+leftoverCash;
+  const sourceValueAtSellThreshold=Number(source.exitComparison?.valueAtSellThreshold||sourceValue);
+  const sourceValueAtTarget=Number(source.exitComparison?.valueAtTarget||sourceValue);
+
+  return {
+    sourceKey,
+    sourceName:source.name,
+    sourceQty:Number(source.qty||0),
+    sourceSellNowValue:sourceValue,
+    sourceSellThresholdPrice:Number(source.option?.sellThreshold||0),
+    sourceTargetPrice:Number(source.option?.target||0),
+    sourceValueAtSellThreshold,
+    sourceValueAtTarget,
+    targetKey,
+    targetName:target.name,
+    targetCurrentPrice:Number(target.price||0),
+    targetSellThresholdPrice:Number(target.sellThreshold||0),
+    targetTargetPrice:Number(target.target||0),
+    portfolioValue,
+    cap,
+    capDollars,
+    existingTargetValue,
+    availableRoom,
+    amountInvested,
+    units,
+    spent,
+    leftoverCash,
+    capLimited:amountInvested<sourceValue-0.01,
+    valueAtSellThreshold,
+    valueAtTarget,
+    gainAtSellThreshold:valueAtSellThreshold-sourceValue,
+    gainAtSellThresholdPct:sourceValue>0?valueAtSellThreshold/sourceValue-1:0,
+    gainAtTarget:valueAtTarget-sourceValue,
+    gainAtTargetPct:sourceValue>0?valueAtTarget/sourceValue-1:0,
+    versusHoldingSourceAtThreshold:valueAtSellThreshold-sourceValueAtSellThreshold,
+    versusHoldingSourceAtTarget:valueAtTarget-sourceValueAtTarget,
+    purchaseExcluded:Boolean(target.purchaseExcluded),
+    buyBlockedByEvent:Boolean(target.buyBlockedByEvent),
+    eventBlockReason:target.eventBlockReason||'',
+    actionable:Boolean(target.inManualBuyZone&&!target.purchaseExcluded&&!target.buyBlockedByEvent),
+    targetEntryLabel:target.purchaseExcluded
+      ? 'excluded from new purchases'
+      : target.buyBlockedByEvent
+        ? 'blocked by active event risk'
+        : target.inManualBuyZone
+          ? 'inside its actionable buy zone'
+          : 'outside its actionable buy zone'
+  };
+}
+
 function analyze(data){
   const assumptions=getAssumptions(data), params=modeParams();
   const eventMemory = updateEventMemory(data);

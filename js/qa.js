@@ -1,4 +1,4 @@
-window.BM_QA_VERSION='v15-exit-value-comparison';
+window.BM_QA_VERSION='v16-switch-calculator';
 const ADVISOR_ALIASES = {
   counterfeit_bills:['counterfeit bills','counterfeit bill','counterfeit cash','fake cash','fake money','bills','counterfeit'],
   stolen_electronics:['stolen electronics','electronics','electronic'],
@@ -1062,6 +1062,9 @@ function switchDecisionAnswer(q,entities,data,result){
   if(!sourceOpt||!targetOpt) return null;
 
   const holding=holdingForKey(data,source.key);
+  const switchScenario=typeof calculateCommoditySwitchScenario==='function'
+    ? calculateCommoditySwitchScenario(data,result,source.key,target.key)
+    : null;
   const plan=result?.portfolioPlan||{};
   const recommended=plan.recommendedTrades||[];
   const candidate=plan.candidateTrades||plan.trades||[];
@@ -1105,10 +1108,14 @@ function switchDecisionAnswer(q,entities,data,result){
     reason=`The difference between the two positions is not strong enough to justify a sell-and-buy rotation right now.`;
   }
 
+  const valueText=switchScenario
+    ? ` Selling ${source.name} now provides ${fmt(switchScenario.sourceSellNowValue)}. Under the ${Math.round(switchScenario.cap*100)}% cap, about ${fmt(switchScenario.amountInvested)} can buy ${switchScenario.units.toLocaleString()} units of ${target.name}, leaving ${fmt(switchScenario.leftoverCash)} cash. At ${target.name}'s sell threshold the scenario is worth ${fmt(switchScenario.valueAtSellThreshold)} (${switchScenario.gainAtSellThreshold>=0?'+':'-'}${fmt(Math.abs(switchScenario.gainAtSellThreshold))} versus cash). At its target/max it is worth ${fmt(switchScenario.valueAtTarget)} (${switchScenario.gainAtTarget>=0?'+':'-'}${fmt(Math.abs(switchScenario.gainAtTarget))} versus cash). Compared with holding ${source.name} to its own target, that is ${switchScenario.versusHoldingSourceAtTarget>=0?'+':'-'}${fmt(Math.abs(switchScenario.versusHoldingSourceAtTarget))}.`
+    : '';
+
   return {
     title:`${verdict}: ${source.name} → ${target.name}`,
-    body:`${reason} ${source.name} has ${pct(sourceUpside)} target upside and a score of ${Math.round(sourceOpt.score)}; ${target.name} has ${pct(targetUpside)} target upside and a score of ${Math.round(targetOpt.score)}.`,
-    evidence:`Source ${fmt(sourceOpt.price)} · Destination ${fmt(targetOpt.price)} · Destination ${entryLabel(targetOpt)} · Relative target-upside edge ${pct(edge)} · Candidate trades ${tradesNeeded||'none'} · Portfolio decision: ${plan.opportunityCostDecision||result.action}.`
+    body:`${reason}${valueText} ${source.name} has ${pct(sourceUpside)} target upside and a score of ${Math.round(sourceOpt.score)}; ${target.name} has ${pct(targetUpside)} target upside and a score of ${Math.round(targetOpt.score)}.`,
+    evidence:`Source ${fmt(sourceOpt.price)} · Destination ${fmt(targetOpt.price)} · Destination ${entryLabel(targetOpt)} · Candidate trades ${tradesNeeded||'not in candidate plan'} · Plan decision ${plan.opportunityCostDecision||'not available'}${switchScenario?.capLimited?' · Purchase amount limited by the commodity cap':''}.`
   };
 }
 

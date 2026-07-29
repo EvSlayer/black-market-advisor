@@ -1,4 +1,4 @@
-window.BM_QA_VERSION='v14-event-strategy-exclusions';
+window.BM_QA_VERSION='v15-exit-value-comparison';
 const ADVISOR_ALIASES = {
   counterfeit_bills:['counterfeit bills','counterfeit bill','counterfeit cash','fake cash','fake money','bills','counterfeit'],
   stolen_electronics:['stolen electronics','electronics','electronic'],
@@ -1150,10 +1150,28 @@ function exitStrategyAnswer(q,entities,data,result){
     ? ` You are currently about ${pct(profitPct)} versus the average buy price, so selling also realizes a loss.`
     : ` You are currently about ${pct(profitPct)} versus the average buy price.`;
 
+  const comparison=(result?.positionAssessments||[]).find(position=>position.key===entity.key)?.exitComparison;
+  const qty=Number(comparison?.qty ?? h?.qty ?? 0);
+  const sellNowValue=Number(comparison?.sellNowValue ?? (qty*o.price));
+  const thresholdValue=Number(comparison?.valueAtSellThreshold ?? (qty*o.sellThreshold));
+  const targetValue=Number(comparison?.valueAtTarget ?? (qty*o.target));
+  const thresholdExtra=thresholdValue-sellNowValue;
+  const targetExtra=targetValue-sellNowValue;
+  const signedMoney=value=>`${value>=0?'+':'-'}${fmt(Math.abs(value))}`;
+  const signedPctValue=value=>`${value>=0?'+':''}${pct(value)}`;
+  const thresholdPct=sellNowValue>0?thresholdExtra/sellNowValue:0;
+  const targetPct=sellNowValue>0?targetExtra/sellNowValue:0;
+  const targetNote=targetExtra<=0
+    ? `The current price is already at or above the configured target, so waiting for that target does not add modeled upside.`
+    : `Waiting for the configured target of ${fmt(o.target)} would produce about ${fmt(targetValue)}, which is ${signedMoney(targetExtra)} (${signedPctValue(targetPct)}) more than selling now.`;
+  const thresholdNote=thresholdExtra<=0
+    ? `The current price is already at or above the sell threshold.`
+    : `At the sell threshold of ${fmt(o.sellThreshold)}, the position would be worth about ${fmt(thresholdValue)}, or ${signedMoney(thresholdExtra)} (${signedPctValue(thresholdPct)}) more than selling now.`;
+
   return {
     title:`${action}: ${o.name}`,
-    body:`Use these exit triggers rather than an arbitrary price guess:<br>• ${triggers.join('<br>• ')}.${lossNote}${candidateSell&&!sellTrade?' The model has considered a sale, but it is not yet an actionable trade.':''}`,
-    evidence:`Current ${fmt(o.price)} · Sell threshold ${fmt(o.sellThreshold)} · ${exitLabel(o)} · Recent trend ${trend.label} ${pct(trend.pct)} · Sell pressure ${result.sellPressure||'N/A'} · Portfolio action ${result.action}.`
+    body:`Selling ${qty.toLocaleString()} units now would return approximately <strong>${fmt(sellNowValue)}</strong>. ${thresholdNote} ${targetNote}<br><br>Use these exit triggers rather than waiting blindly for the absolute maximum:<br>• ${triggers.join('<br>• ')}.${lossNote}${candidateSell&&!sellTrade?' The model has considered a sale, but it is not yet an actionable trade.':''}`,
+    evidence:`Quantity ${qty.toLocaleString()} · Current ${fmt(o.price)} · Sell-now value ${fmt(sellNowValue)} · Sell-threshold value ${fmt(thresholdValue)} · Target/max value ${fmt(targetValue)} · Recent trend ${trend.label} ${pct(trend.pct)} · Sell pressure ${result.sellPressure||'N/A'} · Portfolio action ${result.action}. Target/max is a scenario, not a guaranteed future price.`
   };
 }
 

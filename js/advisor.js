@@ -195,7 +195,33 @@ function analyze(data){
     if(o.pos >= Math.min(.96, params.sellZone+.10) || o.upsidePct <= params.maxUpsideForCash/2) pressure='High';
     else if(o.pos >= params.sellZone || o.upsidePct <= params.maxUpsideForCash) pressure='Medium-High';
     else if(o.pos >= Math.max(.58, params.sellZone-.18)) pressure='Medium';
-    return {...h, option:o, portfolioPct:currentValue?h.value/currentValue:0, profitPct, sellPressure:pressure};
+    const qty=Number(h.qty||0);
+    const currentPrice=Number(o.price||h.current||0);
+    const currentValueForPosition=Number(h.value||qty*currentPrice||0);
+    const sellThresholdPrice=Number(o.sellThreshold||0);
+    const targetPrice=Number(o.target||currentPrice||0);
+    const avgBuyPrice=Number(h.avgBuy||0);
+    const valueAtSellThreshold=qty>0 && sellThresholdPrice>0 ? qty*sellThresholdPrice : currentValueForPosition;
+    const valueAtTarget=qty>0 && targetPrice>0 ? qty*targetPrice : currentValueForPosition;
+    const exitComparison={
+      qty,
+      currentPrice,
+      avgBuyPrice,
+      sellNowValue:currentValueForPosition,
+      sellThresholdPrice,
+      valueAtSellThreshold,
+      additionalToSellThreshold:valueAtSellThreshold-currentValueForPosition,
+      additionalToSellThresholdPct:currentValueForPosition>0 ? valueAtSellThreshold/currentValueForPosition-1 : 0,
+      targetPrice,
+      valueAtTarget,
+      additionalToTarget:valueAtTarget-currentValueForPosition,
+      additionalToTargetPct:currentValueForPosition>0 ? valueAtTarget/currentValueForPosition-1 : 0,
+      profitIfSoldNow:avgBuyPrice>0 ? qty*(currentPrice-avgBuyPrice) : null,
+      profitAtTarget:avgBuyPrice>0 ? qty*(targetPrice-avgBuyPrice) : null,
+      alreadyAtOrAboveThreshold:sellThresholdPrice>0 && currentPrice>=sellThresholdPrice,
+      alreadyAtOrAboveTarget:targetPrice>0 && currentPrice>=targetPrice
+    };
+    return {...h, option:o, portfolioPct:currentValue?h.value/currentValue:0, profitPct, sellPressure:pressure, exitComparison};
   }).filter(Boolean);
   const minorCurrentValue = ignoredDust.reduce((s,h)=>s+(h.value||0),0);
   const baselineExpected = data.cash + minorCurrentValue + positionAssessments.reduce((s,p)=>s + (p.qty||0)*p.option.target,0);
@@ -374,6 +400,22 @@ function analyze(data){
       ? (portfolioPlan.overBudget ? 'High' : portfolioPlan.improvementPct < .12 ? 'Medium' : 'Low')
       : pressureRank[portfolioSellPressure] >= 3 ? 'Medium' : 'Low';
   sellPressure = portfolioSellPressure;
+
+  const sellNowVsHold = {
+    sellNowValue: data.cash + positionAssessments.reduce((sum,p)=>sum+(p.exitComparison?.sellNowValue||0),0) + ignoredDust.reduce((sum,h)=>sum+(h.value||0),0),
+    valueAtSellThreshold: data.cash + positionAssessments.reduce((sum,p)=>sum+(p.exitComparison?.valueAtSellThreshold||p.value||0),0) + ignoredDust.reduce((sum,h)=>sum+(h.value||0),0),
+    valueAtTarget: data.cash + positionAssessments.reduce((sum,p)=>sum+(p.exitComparison?.valueAtTarget||p.value||0),0) + ignoredDust.reduce((sum,h)=>sum+(h.value||0),0),
+    positions: positionAssessments.map(p=>({
+      key:p.key,
+      name:p.name,
+      sellPressure:p.sellPressure,
+      ...p.exitComparison
+    }))
+  };
+  sellNowVsHold.additionalToSellThreshold=sellNowVsHold.valueAtSellThreshold-sellNowVsHold.sellNowValue;
+  sellNowVsHold.additionalToSellThresholdPct=sellNowVsHold.sellNowValue>0 ? sellNowVsHold.additionalToSellThreshold/sellNowVsHold.sellNowValue : 0;
+  sellNowVsHold.additionalToTarget=sellNowVsHold.valueAtTarget-sellNowVsHold.sellNowValue;
+  sellNowVsHold.additionalToTargetPct=sellNowVsHold.sellNowValue>0 ? sellNowVsHold.additionalToTarget/sellNowVsHold.sellNowValue : 0;
 
   const dataPoints = Math.max(...data.commodities.map(c=>c.history?.length||0),0);
   const dataConfidence = Math.round(Math.max(15, Math.min(92, 20 + dataPoints*0.9)));

@@ -459,6 +459,100 @@ function renderPositionSwitchOutlook(data, result) {
 
 
 
+
+function renderSellNowVsHold(data,result){
+  const box=document.getElementById('sellNowVsHold');
+  if(!box) return;
+
+  const summary=result?.sellNowVsHold;
+  const positions=summary?.positions?.length
+    ? summary.positions
+    : (result?.positionAssessments||[]).map(position=>{
+        const option=position.option||{};
+        const qty=Number(position.qty||0);
+        const sellNowValue=Number(position.value||qty*option.price||0);
+        const valueAtSellThreshold=qty*Number(option.sellThreshold||option.price||0);
+        const valueAtTarget=qty*Number(option.target||option.price||0);
+        return {
+          key:position.key,
+          name:position.name||option.name,
+          qty,
+          currentPrice:Number(option.price||position.current||0),
+          avgBuyPrice:Number(position.avgBuy||0),
+          sellNowValue,
+          sellThresholdPrice:Number(option.sellThreshold||0),
+          valueAtSellThreshold,
+          additionalToSellThreshold:valueAtSellThreshold-sellNowValue,
+          additionalToSellThresholdPct:sellNowValue>0?valueAtSellThreshold/sellNowValue-1:0,
+          targetPrice:Number(option.target||0),
+          valueAtTarget,
+          additionalToTarget:valueAtTarget-sellNowValue,
+          additionalToTargetPct:sellNowValue>0?valueAtTarget/sellNowValue-1:0,
+          sellPressure:position.sellPressure||'N/A',
+          alreadyAtOrAboveThreshold:Number(option.price||0)>=Number(option.sellThreshold||Infinity),
+          alreadyAtOrAboveTarget:Number(option.price||0)>=Number(option.target||Infinity)
+        };
+      });
+
+  if(!positions.length){
+    box.innerHTML='<div class="mini">No meaningful holdings are available for an exit-value comparison.</div>';
+    return;
+  }
+
+  const signedMoney=value=>{
+    const n=Number(value||0);
+    return `${n>=0?'+':'-'}${fmt(Math.abs(n))}`;
+  };
+  const signedPct=value=>{
+    const n=Number(value||0);
+    return `${n>=0?'+':''}${pct(n)}`;
+  };
+
+  const sellNowTotal=Number(summary?.sellNowValue ?? ((data?.cash||0)+positions.reduce((sum,p)=>sum+p.sellNowValue,0)));
+  const thresholdTotal=Number(summary?.valueAtSellThreshold ?? ((data?.cash||0)+positions.reduce((sum,p)=>sum+p.valueAtSellThreshold,0)));
+  const targetTotal=Number(summary?.valueAtTarget ?? ((data?.cash||0)+positions.reduce((sum,p)=>sum+p.valueAtTarget,0)));
+  const thresholdExtra=thresholdTotal-sellNowTotal;
+  const targetExtra=targetTotal-sellNowTotal;
+
+  const rows=positions.map(position=>{
+    const thresholdClass=position.additionalToSellThreshold>=0?'good':'bad';
+    const targetClass=position.additionalToTarget>=0?'good':'bad';
+    const targetStatus=position.alreadyAtOrAboveTarget
+      ? '<span class="warn">At/above target</span>'
+      : `${signedMoney(position.additionalToTarget)} (${signedPct(position.additionalToTargetPct)})`;
+    return `
+      <tr>
+        <td><strong>${position.name}</strong><br><span class="mini">${position.qty.toLocaleString()} units · ${position.sellPressure} sell pressure</span></td>
+        <td class="num">${fmt(position.currentPrice)}<br><span class="mini">${fmt(position.sellNowValue)}</span></td>
+        <td class="num">${fmt(position.sellThresholdPrice)}<br><span class="${thresholdClass}">${signedMoney(position.additionalToSellThreshold)} (${signedPct(position.additionalToSellThresholdPct)})</span></td>
+        <td class="num">${fmt(position.targetPrice)}<br><span class="${targetClass}">${targetStatus}</span></td>
+      </tr>
+    `;
+  }).join('');
+
+  box.innerHTML=`
+    <div class="metrics" style="margin-bottom:14px">
+      <div class="metric"><div class="k">Sell all now</div><div class="v">${fmt(sellNowTotal)}</div></div>
+      <div class="metric"><div class="k">At sell thresholds</div><div class="v">${fmt(thresholdTotal)}</div><div class="${thresholdExtra>=0?'good':'bad'}">${signedMoney(thresholdExtra)}</div></div>
+      <div class="metric"><div class="k">At configured targets</div><div class="v">${fmt(targetTotal)}</div><div class="${targetExtra>=0?'good':'bad'}">${signedMoney(targetExtra)} (${signedPct(sellNowTotal>0?targetExtra/sellNowTotal:0)})</div></div>
+    </div>
+    <div style="overflow:auto">
+      <table>
+        <tr>
+          <th>Holding</th>
+          <th class="num">Sell now</th>
+          <th class="num">Sell threshold</th>
+          <th class="num">Configured target/max</th>
+        </tr>
+        ${rows}
+      </table>
+    </div>
+    <div class="mini" style="margin-top:10px">
+      “Target/max” is a scenario based on the configured assumption, not a promise that the market will reach that price. Values exclude any game transaction fee unless one is present in the captured data.
+    </div>
+  `;
+}
+
 function render(data, result){
   const currentName = result.portfolioOpt ? 'your current mix' : (result.currentOpt?.name || 'Cash');
   const pplan=result.portfolioPlan;
@@ -662,6 +756,7 @@ a.key === '__cash'
   const majorRows = result.positionAssessments?.length ? result.positionAssessments.map(p=>`<tr><th>${p.option.name}</th><td class="num">${fmt(p.value)} (${pct(p.portfolioPct)}) · ${p.sellPressure} sell pressure</td></tr>`).join('') : '';
   const dustNote = result.ignoredDust?.length ? `<tr><th>Minor holdings (&lt;${Math.round(result.majorThresholdPct*100)}%)</th><td class="num">${result.ignoredDust.map(h=>`${h.name}: ${fmt(h.value)} (${pct(result.currentValue?h.value/result.currentValue:0)})`).join('<br>')}</td></tr>` : '';
   document.getElementById('positionBox').innerHTML = `<table><tr><th>Portfolio</th><td class="num">${fmt(result.currentValue)}</td></tr><tr><th>Cash</th><td class="num">${fmt(data.cash)}</td></tr>${majorRows}${dustNote}<tr><th>Trades left</th><td class="num">${data.tradesRemaining ?? 'Unknown'}</td></tr><tr><th>Week ends in</th><td class="num">${data.timeRemaining || 'Unknown'}</td></tr></table>`;
+  renderSellNowVsHold(data,result);
   document.getElementById('eventsBox').innerHTML = data.events.length ? `<ul>${data.events.map(e=>{
     const n = normalizeEventName(e);
     const p = result.eventMemory?.profiles?.[n];

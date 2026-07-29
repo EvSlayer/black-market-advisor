@@ -10,7 +10,7 @@
 <div class="wrap">
   <div class="hero">
     <div><h1>Black Market Advisor</h1><div class="sub">Capture the current market and get a 50%-cap portfolio plan, buy/sell zones, trade steps, and event-aware decision support.</div></div>
-    <div class="pill">V3.0: Event strategy + purchase exclusions</div>
+    <div class="pill">V3.1: Sell now vs hold comparison</div>
   </div>
 
 
@@ -233,6 +233,14 @@
       </section>
     </div>
 
+    <section class="card" id="sellNowVsHoldPanel" style="margin-top:16px">
+      <h2>Sell Now vs Hold</h2>
+      <div class="mini" style="margin-bottom:10px">
+        Compare the cash value of selling each current holding now with its configured sell threshold and target/max scenario.
+      </div>
+      <div id="sellNowVsHold"></div>
+    </section>
+
     <div class="grid" style="margin-top:16px">
       <section class="card">
         <h2>Pros & Cons</h2>
@@ -332,6 +340,6 @@
   <div class="footer-note">This tool does not predict the next tick. It creates a diversified portfolio plan under the 50% cap using saved price history, buy/sell thresholds, trade costs, cash discipline, and multi-window event intelligence.</div>
 </div>
 <script src="js/discord.js?v=6"></script>
-<script src="js/app.js?v=14"></script>
+<script src="js/app.js?v=15"></script>
 </body>
 </html>

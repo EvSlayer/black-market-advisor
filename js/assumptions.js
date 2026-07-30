@@ -5,7 +5,7 @@ function defaultAssumptionsFrom(data){
     const c=data?.commodities?.find(x=>x.key===key);
     const hist=c?.history||[];
     out[key] = saved[key] || {min:'', avg:'', max:'', buy:'', sell:''};
-    if(!out[key].auto){ out[key].auto = {min: quantile(hist,.05)||Math.min(...hist,c?.price||0), avg: quantile(hist,.50)||c?.price||0, max: quantile(hist,.95)||Math.max(...hist,c?.price||0)}; }
+    if(!out[key].auto){ out[key].auto = {min: quantile(hist,.05)||c?.recordLow||Math.min(...hist,c?.price||0), avg: quantile(hist,.50)||c?.price||0, max: quantile(hist,.95)||c?.recordHigh||Math.max(...hist,c?.price||0)}; }
   });
   return out;
 }
@@ -33,9 +33,9 @@ function getAssumptions(data){
   COMMODITIES.forEach(([key,name])=>{
     const c=data.commodities.find(x=>x.key===key); const hist=c?.history||[];
     out[key]={
-      min: cleanNum(document.querySelector(`input[data-a="${key}"][data-f="min"]`)?.value) || quantile(hist,.05) || Math.min(...hist,c?.price||0),
+      min: cleanNum(document.querySelector(`input[data-a="${key}"][data-f="min"]`)?.value) || quantile(hist,.05) || c?.recordLow || Math.min(...hist,c?.price||0),
       avg: cleanNum(document.querySelector(`input[data-a="${key}"][data-f="avg"]`)?.value) || quantile(hist,.50) || c?.price || 0,
-      max: cleanNum(document.querySelector(`input[data-a="${key}"][data-f="max"]`)?.value) || quantile(hist,.95) || Math.max(...hist,c?.price||0),
+      max: cleanNum(document.querySelector(`input[data-a="${key}"][data-f="max"]`)?.value) || quantile(hist,.95) || c?.recordHigh || Math.max(...hist,c?.price||0),
       buy: cleanNum(document.querySelector(`input[data-a="${key}"][data-f="buy"]`)?.value) || quantile(hist,.12) || ((quantile(hist,.05)||c?.price||0)*1.15),
       sell: cleanNum(document.querySelector(`input[data-a="${key}"][data-f="sell"]`)?.value) || quantile(hist,.88) || ((quantile(hist,.95)||c?.price||0)*0.90)
     };

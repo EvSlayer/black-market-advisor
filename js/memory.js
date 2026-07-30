@@ -3,7 +3,41 @@ function loadMarketMemory(){
   catch(e){ return {commodities:{},captures:[]}; }
 }
 function saveMarketMemory(mem){
-  try { localStorage.setItem('bm_market_memory_v1', JSON.stringify(mem)); } catch(e){}
+  try {
+    localStorage.setItem('bm_market_memory_v1', JSON.stringify(mem));
+    return {ok:true,error:null};
+  } catch(error) {
+    console.error('Unable to save market memory:', error);
+    return {ok:false,error:String(error?.message||error)};
+  }
+}
+
+function validMemoryPrices(values){
+  return (values||[])
+    .map(Number)
+    .filter(value=>Number.isFinite(value)&&value>0);
+}
+
+function updateLifetimePriceRecords(entry, values, capturedAt){
+  const incoming=validMemoryPrices(values);
+  if(!incoming.length) return entry;
+
+  const batchLow=Math.min(...incoming);
+  const batchHigh=Math.max(...incoming);
+  const oldLow=Number(entry.recordLow);
+  const oldHigh=Number(entry.recordHigh);
+
+  if(!Number.isFinite(oldLow) || batchLow<oldLow){
+    entry.recordLow=batchLow;
+    entry.recordLowAt=capturedAt||entry.recordLowAt||null;
+  }
+
+  if(!Number.isFinite(oldHigh) || batchHigh>oldHigh){
+    entry.recordHigh=batchHigh;
+    entry.recordHighAt=capturedAt||entry.recordHighAt||null;
+  }
+
+  return entry;
 }
 function findOverlap(existing, incoming){
   const max = Math.min(existing.length, incoming.length);
@@ -32,25 +66,55 @@ function updateMarketMemory(data){
   mem.captures ||= [];
   let totalAdded = 0;
   data.commodities.forEach(c=>{
-    const entry = mem.commodities[c.key] || {name:c.name, prices:[], captures:0, lastPrice:null};
+    const entry = mem.commodities[c.key] || {
+      name:c.name,
+      prices:[],
+      captures:0,
+      lastPrice:null,
+      recordLow:null,
+      recordHigh:null,
+      recordLowAt:null,
+      recordHighAt:null
+    };
     const incoming = (c.history && c.history.length) ? c.history : [c.price];
     const merged = mergePriceSeries(entry.prices, incoming);
+
+    // Migration: establish permanent records from every price still retained in
+    // existing memory, then compare every new sparkline/current price against them.
+    updateLifetimePriceRecords(
+      entry,
+      [...validMemoryPrices(entry.prices), ...validMemoryPrices(incoming), Number(c.price)],
+      data.parsedAt
+    );
+
     entry.name = c.name;
     entry.prices = merged.series;
     entry.lastPrice = c.price;
+    entry.firstCapturedAt ||= data.parsedAt;
     entry.lastCapturedAt = data.parsedAt;
     entry.captures = (entry.captures || 0) + 1;
     mem.commodities[c.key] = entry;
+
     c.sparkHistory = c.history || [];
     c.memoryHistory = entry.prices || [];
     c.history = entry.prices && entry.prices.length ? entry.prices : c.sparkHistory;
+    c.recordLow = entry.recordLow;
+    c.recordHigh = entry.recordHigh;
+    c.recordLowAt = entry.recordLowAt || null;
+    c.recordHighAt = entry.recordHighAt || null;
     totalAdded += merged.added;
   });
   mem.captures.push({capturedAt:data.parsedAt, events:data.events||[], prices:Object.fromEntries(data.commodities.map(c=>[c.key,c.price])), tradesRemaining:data.tradesRemaining, totalPortfolio:data.totalPortfolio});
   if(mem.captures.length > 1000) mem.captures = mem.captures.slice(-1000);
-  saveMarketMemory(mem);
+  const saveResult=saveMarketMemory(mem);
   const points = Object.values(mem.commodities).reduce((s,e)=>s+(e.prices?.length||0),0);
-  data.memoryStats = {totalAdded, totalPoints:points, captures:mem.captures.length};
+  data.memoryStats = {
+    totalAdded,
+    totalPoints:points,
+    captures:mem.captures.length,
+    saved:saveResult.ok,
+    saveError:saveResult.error
+  };
   return data.memoryStats;
 }
 function applyMarketMemoryWithoutSaving(data){
@@ -59,9 +123,23 @@ function applyMarketMemoryWithoutSaving(data){
     const entry = mem.commodities?.[c.key];
     if(entry?.prices?.length){
       const merged = mergePriceSeries(entry.prices, c.history || []);
+      const preview={...entry};
+      updateLifetimePriceRecords(
+        preview,
+        [...validMemoryPrices(merged.series), Number(c.price)],
+        data.parsedAt
+      );
       c.sparkHistory = c.history || [];
       c.memoryHistory = merged.series;
       c.history = merged.series;
+      c.recordLow = preview.recordLow;
+      c.recordHigh = preview.recordHigh;
+      c.recordLowAt = preview.recordLowAt || null;
+      c.recordHighAt = preview.recordHighAt || null;
+    }else{
+      const valid=validMemoryPrices([...(c.history||[]),Number(c.price)]);
+      c.recordLow=valid.length?Math.min(...valid):null;
+      c.recordHigh=valid.length?Math.max(...valid):null;
     }
   });
   return data;
